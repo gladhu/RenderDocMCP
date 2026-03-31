@@ -29,6 +29,26 @@ def get_capture_status() -> dict:
 
 
 @mcp.tool
+def get_replay_context() -> dict:
+    """
+    Get the current replay context information from RenderDoc.
+
+    Returns details about the replay device configuration:
+    - remote_connected: Whether a remote device is connected for replay
+    - remote_hostname: Hostname of the connected remote device
+    - remote_friendly_name: Display name of the remote device
+    - is_localhost: Whether the current replay target is localhost
+    - capture_loaded: Whether a capture is currently loaded
+    - capture_local: Whether the loaded capture file is local (only present if capture loaded)
+
+    This is useful for checking which device will be used for replay before
+    opening a capture, especially for mobile GPU captures that require
+    remote replay on the original device.
+    """
+    return bridge.call("get_replay_context")
+
+
+@mcp.tool
 def get_draw_calls(
     include_children: bool = True,
     marker_filter: str | None = None,
@@ -298,17 +318,31 @@ def list_captures(directory: str) -> dict:
 
 
 @mcp.tool
-def open_capture(capture_path: str) -> dict:
+def open_capture(
+    capture_path: str,
+    use_remote: bool | None = None,
+) -> dict:
     """
     Open a RenderDoc capture file (.rdc).
 
+    If a remote device is already connected in RenderDoc GUI, the capture
+    will automatically be replayed on the remote device instead of locally.
+    This is essential for captures from mobile devices (e.g. Android/Vulkan)
+    that require specific GPU extensions not available on the local PC.
+
     Args:
         capture_path: Full path to the capture file to open
+        use_remote: If True, force remote replay; if False, force local replay;
+                    if not specified, auto-detect (use remote if connected, else local)
 
-    Returns success status and information about the opened capture.
+    Returns success status and information about the opened capture,
+    including which device (local or remote) is used for replay.
     Note: This will close any currently open capture.
     """
-    return bridge.call("open_capture", {"capture_path": capture_path})
+    params: dict[str, object] = {"capture_path": capture_path}
+    if use_remote is not None:
+        params["use_remote"] = use_remote
+    return bridge.call("open_capture", params)
 
 
 def main():

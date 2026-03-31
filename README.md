@@ -1,54 +1,63 @@
-# RenderDoc MCP Server
+# 声明
 
-RenderDoc UI拡張機能として動作するMCPサーバー。AIアシスタントがRenderDocのキャプチャデータにアクセスし、グラフィックスデバッグを支援する。
+本仓库基于 https://github.com/halby24/RenderDocMCP 进行功能扩展，扩展了以下功能：
 
-## アーキテクチャ
+1. 现在支持所有图形API的buffer content获取
+2. remote-device-replay
+
+下文是原仓库内容的中文版翻译：
+
+# RenderDoc MCP 服务器
+
+作为 RenderDoc UI 扩展运行的 MCP 服务器。使 AI 助手能够访问 RenderDoc 的捕获数据，辅助图形调试。
+
+## 架构
 
 ```
-Claude/AI Client (stdio)
+Claude/AI 客户端 (stdio)
         │
         ▼
-MCP Server Process (Python + FastMCP 2.0)
-        │ File-based IPC (%TEMP%/renderdoc_mcp/)
+MCP 服务器进程 (Python + FastMCP 2.0)
+        │ 基于文件的 IPC (%TEMP%/renderdoc_mcp/)
         ▼
-RenderDoc Process (Extension)
+RenderDoc 进程 (扩展)
 ```
 
-RenderDoc内蔵のPythonにはsocketモジュールがないため、ファイルベースのIPCで通信を行う。
+由于 RenderDoc 内置的 Python 没有 socket 模块，因此通过基于文件的 IPC 进行通信。
 
-## セットアップ
+## 安装配置
 
-### 1. RenderDoc拡張機能のインストール
+### 1. 安装 RenderDoc 扩展
 
 ```bash
 python scripts/install_extension.py
 ```
 
-拡張機能は `%APPDATA%\qrenderdoc\extensions\renderdoc_mcp_bridge` にインストールされる。
+扩展将安装到 `%APPDATA%\qrenderdoc\extensions\renderdoc_mcp_bridge`。
 
-### 2. RenderDocで拡張機能を有効化
+### 2. 在 RenderDoc 中启用扩展
 
-1. RenderDocを起動
-2. Tools > Manage Extensions
-3. "RenderDoc MCP Bridge" を有効化
+1. 启动 RenderDoc
+2. 打开 Tools > Manage Extensions
+3. 启用 "RenderDoc MCP Bridge"
 
-### 3. MCPサーバーのインストール
+### 3. 安装 MCP 服务器
 
 ```bash
 uv tool install
-uv tool update-shell  # PATHに追加
+uv tool update-shell  # 添加到 PATH
 ```
 
-シェルを再起動すると `renderdoc-mcp` コマンドが使えるようになる。
+重启终端后即可使用 `renderdoc-mcp` 命令。
 
-> **Note**: `--editable` を付けると、ソースコードの変更が即座に反映される（開発時に便利）。
-> 安定版としてインストールする場合は `uv tool install .` を使用。
+> **注意**：添加 `--editable` 参数后，源代码的修改会立即生效（开发时很方便）。
+> 如果作为稳定版安装，请使用 `uv tool install .`。
 
-### 4. MCPクライアントの設定
+### 4. 配置 MCP 客户端
 
 #### Claude Desktop
 
-`claude_desktop_config.json` に追加:
+在 `claude_desktop_config.json` 中添加：
 
 ```json
 {
@@ -62,7 +71,7 @@ uv tool update-shell  # PATHに追加
 
 #### Claude Code
 
-`.mcp.json` に追加:
+在 `.mcp.json` 中添加：
 
 ```json
 {
@@ -74,79 +83,79 @@ uv tool update-shell  # PATHに追加
 }
 ```
 
-## 使い方
+## 使用方法
 
-1. RenderDocを起動し、キャプチャファイル (.rdc) を開く
-2. MCPクライアント (Claude等) から RenderDoc のデータにアクセス
+1. 启动 RenderDoc，打开捕获文件 (.rdc)
+2. 通过 MCP 客户端（如 Claude）访问 RenderDoc 的数据
 
-## MCPツール一覧
+## MCP 工具列表
 
-| ツール | 説明 |
-|--------|------|
-| `get_capture_status` | キャプチャの読み込み状態を確認 |
-| `get_draw_calls` | ドローコール一覧を階層構造で取得 |
-| `get_draw_call_details` | 特定のドローコールの詳細情報を取得 |
-| `get_shader_info` | シェーダーのソースコード・定数バッファの値を取得 |
-| `get_buffer_contents` | バッファの内容を取得 (Base64) |
-| `get_texture_info` | テクスチャのメタデータを取得 |
-| `get_texture_data` | テクスチャのピクセルデータを取得 (Base64) |
-| `get_pipeline_state` | パイプライン状態を取得 |
+| 工具 | 说明 |
+|------|------|
+| `get_capture_status` | 检查捕获的加载状态 |
+| `get_draw_calls` | 以层级结构获取绘制调用列表 |
+| `get_draw_call_details` | 获取特定绘制调用的详细信息 |
+| `get_shader_info` | 获取着色器源代码及常量缓冲区的值 |
+| `get_buffer_contents` | 获取缓冲区内容 (Base64) |
+| `get_texture_info` | 获取纹理的元数据 |
+| `get_texture_data` | 获取纹理的像素数据 (Base64) |
+| `get_pipeline_state` | 获取管线状态 |
 
-## 使用例
+## 使用示例
 
-### ドローコール一覧の取得
+### 获取绘制调用列表
 
 ```
 get_draw_calls(include_children=true)
 ```
 
-### シェーダー情報の取得
+### 获取着色器信息
 
 ```
 get_shader_info(event_id=123, stage="pixel")
 ```
 
-### パイプライン状態の取得
+### 获取管线状态
 
 ```
 get_pipeline_state(event_id=123)
 ```
 
-### テクスチャデータの取得
+### 获取纹理数据
 
 ```
-# 2Dテクスチャのmip 0を取得
+# 获取 2D 纹理的 mip 0
 get_texture_data(resource_id="ResourceId::123")
 
-# 特定のmipレベルを取得
+# 获取特定的 mip 级别
 get_texture_data(resource_id="ResourceId::123", mip=2)
 
-# キューブマップの特定の面を取得 (0=X+, 1=X-, 2=Y+, 3=Y-, 4=Z+, 5=Z-)
+# 获取立方体贴图的特定面 (0=X+, 1=X-, 2=Y+, 3=Y-, 4=Z+, 5=Z-)
 get_texture_data(resource_id="ResourceId::456", slice=3)
 
-# 3Dテクスチャの特定の深度スライスを取得
+# 获取 3D 纹理的特定深度切片
 get_texture_data(resource_id="ResourceId::789", depth_slice=5)
 ```
 
-### バッファデータの部分取得
+### 部分获取缓冲区数据
 
 ```
-# バッファ全体を取得
+# 获取整个缓冲区
 get_buffer_contents(resource_id="ResourceId::123")
 
-# オフセット256から512バイト取得
+# 从偏移量 256 开始获取 512 字节
 get_buffer_contents(resource_id="ResourceId::123", offset=256, length=512)
 ```
 
-## 要件
+## 系统要求
 
 - Python 3.10+
 - [uv](https://docs.astral.sh/uv/)
 - RenderDoc 1.20+
 
-> **Note**: 動作確認はWindows + DirectX 11環境でのみ行っています。
-> Linux/macOS + Vulkan/OpenGL環境でも動作する可能性がありますが、未検証です。
+> **注意**：仅在 Windows + DirectX 11 环境下进行过测试验证。
+> 在 Linux/macOS + Vulkan/OpenGL 环境下可能也能运行，但尚未验证。
 
-## ライセンス
+## 许可证
 
 MIT

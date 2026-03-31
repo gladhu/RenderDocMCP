@@ -115,46 +115,56 @@ class PipelineService:
 
             pipeline_info["shaders"] = stages
 
-            # Viewport and scissor
+            # Viewport (API-agnostic)
             try:
-                vp_scissor = pipe.GetViewportScissor()
-                if vp_scissor:
-                    viewports = []
-                    for v in vp_scissor.viewports:
-                        viewports.append(
-                            {
-                                "x": v.x,
-                                "y": v.y,
-                                "width": v.width,
-                                "height": v.height,
-                                "min_depth": v.minDepth,
-                                "max_depth": v.maxDepth,
-                            }
-                        )
+                viewports = []
+                for i in range(16):  # Max viewports
+                    try:
+                        v = pipe.GetViewport(i)
+                        if v.width > 0 and v.height > 0:
+                            viewports.append(
+                                {
+                                    "x": v.x,
+                                    "y": v.y,
+                                    "width": v.width,
+                                    "height": v.height,
+                                    "min_depth": v.minDepth,
+                                    "max_depth": v.maxDepth,
+                                }
+                            )
+                        else:
+                            break
+                    except Exception:
+                        break
+                if viewports:
                     pipeline_info["viewports"] = viewports
             except Exception:
                 pass
 
-            # Render targets
+            # Render targets (API-agnostic)
             try:
-                om = pipe.GetOutputMerger()
-                if om:
-                    rts = []
-                    for i, rt in enumerate(om.renderTargets):
-                        if rt.resourceId != rd.ResourceId.Null():
-                            rts.append({"index": i, "resource_id": str(rt.resourceId)})
+                output_targets = pipe.GetOutputTargets()
+                rts = []
+                for i, rt in enumerate(output_targets):
+                    if rt.resource != rd.ResourceId.Null():
+                        rts.append({"index": i, "resource_id": str(rt.resource)})
+                if rts:
                     pipeline_info["render_targets"] = rts
-
-                    if om.depthTarget.resourceId != rd.ResourceId.Null():
-                        pipeline_info["depth_target"] = str(om.depthTarget.resourceId)
             except Exception:
                 pass
 
-            # Input assembly
+            # Depth target (API-agnostic)
             try:
-                ia = pipe.GetIAState()
-                if ia:
-                    pipeline_info["input_assembly"] = {"topology": str(ia.topology)}
+                depth = pipe.GetDepthTarget()
+                if depth.resource != rd.ResourceId.Null():
+                    pipeline_info["depth_target"] = str(depth.resource)
+            except Exception:
+                pass
+
+            # Input assembly / topology (API-agnostic)
+            try:
+                topo = pipe.GetPrimitiveTopology()
+                pipeline_info["input_assembly"] = {"topology": str(topo)}
             except Exception:
                 pass
 
@@ -303,28 +313,49 @@ class PipelineService:
         return samplers
 
     def _get_stage_cbuffers(self, controller, pipe, stage, reflection):
-        """Get constant buffers for a stage from shader reflection"""
+        """Get constant buffers for a stage with actual values"""
         cbuffers = []
         try:
             if not reflection:
                 return cbuffers
 
-            for cb in reflection.constantBlocks:
+            for i, cb in enumerate(reflection.constantBlocks):
                 slot = cb.bindPoint if hasattr(cb, 'bindPoint') else cb.fixedBindNumber
                 cb_info = {
                     "slot": slot,
                     "name": cb.name,
                     "byte_size": cb.byteSize,
                     "variable_count": len(cb.variables) if cb.variables else 0,
-                    "variables": [],
                 }
-                if cb.variables:
-                    for var in cb.variables:
-                        cb_info["variables"].append({
-                            "name": var.name,
-                            "byte_offset": var.byteOffset,
-                            "type": str(var.type.name) if var.type else "",
-                        })
+
+                # Use GetConstantBlock (API-agnostic) to get binding info and actual values
+                try:
+                    used_desc = pipe.GetConstantBlock(stage, i, 0)
+                    if used_desc.descriptor.resource != rd.ResourceId.Null():
+                        cb_info["resource_id"] = str(used_desc.descriptor.resource)
+                        variables = controller.GetCBufferVariableContents(
+                            pipe.GetGraphicsPipelineObject(),
+                            reflection.resourceId,
+                            stage,
+                            reflection.entryPoint,
+                            i,
+                            used_desc.descriptor.resource,
+                            used_desc.descriptor.byteOffset,
+                            used_desc.descriptor.byteSize,
+                        )
+                        cb_info["variables"] = Serializers.serialize_variables(variables)
+                except Exception as e:
+                    cb_info["value_error"] = str(e)
+                    # Fallback: provide at least the layout info from reflection
+                    if cb.variables:
+                        cb_info["variables"] = []
+                        for var in cb.variables:
+                            cb_info["variables"].append({
+                                "name": var.name,
+                                "byte_offset": var.byteOffset,
+                                "type": str(var.type.name) if var.type else "",
+                            })
+
                 cbuffers.append(cb_info)
 
         except Exception as e:
@@ -377,17 +408,20 @@ class PipelineService:
             }
 
             try:
-                bind = pipe.GetConstantBuffer(stage, i, 0)
-                if bind.resourceId != rd.ResourceId.Null():
+                # Use GetConstantBlock (API-agnostic) instead of GetConstantBuffer (D3D-only)
+                # Returns UsedDescriptor with .descriptor.resource, etc.
+                used_desc = pipe.GetConstantBlock(stage, i, 0)
+                if used_desc.descriptor.resource != rd.ResourceId.Null():
+                    cb_info["resource_id"] = str(used_desc.descriptor.resource)
                     variables = controller.GetCBufferVariableContents(
                         pipe.GetGraphicsPipelineObject(),
                         reflection.resourceId,
                         stage,
                         reflection.entryPoint,
                         i,
-                        bind.resourceId,
-                        bind.byteOffset,
-                        bind.byteSize,
+                        used_desc.descriptor.resource,
+                        used_desc.descriptor.byteOffset,
+                        used_desc.descriptor.byteSize,
                     )
                     cb_info["variables"] = Serializers.serialize_variables(variables)
             except Exception as e:

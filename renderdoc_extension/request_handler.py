@@ -14,6 +14,7 @@ class RequestHandler:
         self._methods = {
             "ping": self._handle_ping,
             "get_capture_status": self._handle_get_capture_status,
+            "get_replay_context": self._handle_get_replay_context,
             "get_draw_calls": self._handle_get_draw_calls,
             "get_frame_summary": self._handle_get_frame_summary,
             "find_draws_by_shader": self._handle_find_draws_by_shader,
@@ -62,6 +63,10 @@ class RequestHandler:
     def _handle_get_capture_status(self, params):
         """Handle get_capture_status request"""
         return self.facade.get_capture_status()
+
+    def _handle_get_replay_context(self, params):
+        """Handle get_replay_context request"""
+        return self.facade.get_replay_context()
 
     def _handle_get_draw_calls(self, params):
         """Handle get_draw_calls request"""
@@ -182,4 +187,5 @@ class RequestHandler:
         capture_path = params.get("capture_path")
         if capture_path is None:
             raise ValueError("capture_path is required")
-        return self.facade.open_capture(capture_path)
+        use_remote = params.get("use_remote")  # True/False/None
+        return self.facade.open_capture(capture_path, use_remote=use_remote)

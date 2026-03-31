@@ -51,13 +51,17 @@ class RenderDocFacade:
         """Check if a capture is loaded and get API info"""
         return self._capture.get_capture_status()
 
+    def get_replay_context(self):
+        """Get the current replay context including remote device status"""
+        return self._capture.get_replay_context()
+
     def list_captures(self, directory):
         """List all .rdc files in the specified directory"""
         return self._capture.list_captures(directory)
 
-    def open_capture(self, capture_path):
-        """Open a capture file in RenderDoc"""
-        return self._capture.open_capture(capture_path)
+    def open_capture(self, capture_path, use_remote=None):
+        """Open a capture file in RenderDoc, with optional remote replay support"""
+        return self._capture.open_capture(capture_path, use_remote=use_remote)
 
     # ==================== Draw Call / Action Operations ====================
 
