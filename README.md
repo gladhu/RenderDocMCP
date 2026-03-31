@@ -5,7 +5,7 @@
 1. 现在支持所有图形API的buffer content获取
 2. remote-device-replay
 
-下文是原仓库内容的中文版翻译：
+下文是原仓库README的中文版翻译：
 
 # RenderDoc MCP 服务器
 
