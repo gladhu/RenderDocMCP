@@ -188,6 +188,9 @@ def get_action_timings(
     - count: Number of timing entries
 
     Note: GPU timing counters may not be available on all hardware/drivers.
+    On tile-based mobile GPUs (Mali/Adreno/PowerVR) per-draw timer queries force
+    tile flushes, so individual durations are inflated and do not add up to the
+    frame time; use estimate_shading_cost / get_draw_coverage for those captures.
     """
     params: dict[str, object] = {}
     if event_ids is not None:
@@ -343,6 +346,311 @@ def open_capture(
     if use_remote is not None:
         params["use_remote"] = use_remote
     return bridge.call("open_capture", params)
+
+
+# ==================== Performance analysis ====================
+
+# Long-running analysis calls replay many events; give them more time than the default 30s
+_LONG_TIMEOUT = 1800.0
+
+
+def _selection(event_ids, marker_filter, event_id_min, event_id_max) -> dict[str, object]:
+    params: dict[str, object] = {}
+    if event_ids is not None:
+        params["event_ids"] = event_ids
+    if marker_filter is not None:
+        params["marker_filter"] = marker_filter
+    if event_id_min is not None:
+        params["event_id_min"] = event_id_min
+    if event_id_max is not None:
+        params["event_id_max"] = event_id_max
+    return params
+
+
+@mcp.tool
+def get_draw_coverage(
+    event_ids: list[int] | None = None,
+    marker_filter: str | None = None,
+    event_id_min: int | None = None,
+    event_id_max: int | None = None,
+    summary_only: bool = False,
+) -> dict:
+    """
+    Measure how many pixels each draw call actually shades, using RenderDoc's
+    depth-test overlay (counted with a GPU histogram, no image transfer).
+
+    - passed: pixels that passed the depth test (≈ fragment shader invocations)
+    - failed: pixels covered by the draw but rejected by depth (occluded)
+
+    Runs on the replay device: with remote replay (open_capture(use_remote=True))
+    the numbers come from the phone GPU, which avoids desktop-replay artifacts
+    of mobile GLES captures. Note the overlay ignores shader discard, so
+    alpha-tested draws may be slightly over-counted.
+
+    Select draws with event_ids, marker_filter (substring of any ancestor
+    marker, e.g. "DrawOpaqueObjects") and/or an event id range.
+    """
+    data = bridge.call(
+        "get_draw_coverage",
+        _selection(event_ids, marker_filter, event_id_min, event_id_max),
+        timeout=_LONG_TIMEOUT,
+    )
+    if summary_only:
+        data = {k: v for k, v in data.items() if k != "draws"}
+    return data
+
+
+@mcp.tool
+def get_shader_usage(
+    marker_filter: str | None = None,
+    event_id_min: int | None = None,
+    event_id_max: int | None = None,
+) -> dict:
+    """
+    Group draw calls by pixel shader: draw count, primitive count, sample
+    event ids and the most common bound textures (to identify the material).
+    """
+    return bridge.call(
+        "get_shader_usage",
+        _selection(None, marker_filter, event_id_min, event_id_max),
+        timeout=_LONG_TIMEOUT,
+    )
+
+
+@mcp.tool
+def get_shader_source(
+    event_id: int,
+    stage: Literal["vertex", "pixel"] = "pixel",
+    fold_uniforms: bool = False,
+    overrides: dict[str, str] | None = None,
+    output_path: str | None = None,
+) -> dict:
+    """
+    Get the GLSL source of a shader as captured (OpenGL / GLES captures).
+
+    Args:
+        event_id: Draw call event id
+        stage: "pixel" or "vertex"
+        fold_uniforms: Inject '#define <uniform> <actual value>' for every
+            UnityPerMaterial scalar/vector before main(), so the source reflects
+            the branch path this material really takes
+        overrides: Extra {name: GLSL literal} defines, e.g. {"_RainbowOn": "1.0"}
+        output_path: If set, write the source to this file and omit it from the result
+    """
+    params: dict[str, object] = {
+        "event_ids": [event_id], "stage": stage, "fold_uniforms": fold_uniforms,
+    }
+    if overrides:
+        params["overrides"] = overrides
+    data = bridge.call("get_shader_sources", params, timeout=_LONG_TIMEOUT)
+    if not data["draws"]:
+        raise RenderDocBridgeError("No shader found at event %d" % event_id)
+    draw = data["draws"][0]
+    if "error" in draw:
+        raise RenderDocBridgeError(draw["error"])
+    source = data["sources"][draw["source_id"]]
+    result: dict[str, object] = {
+        "event_id": event_id, "shader": draw["shader"], "stage": stage,
+        "folded_uniforms": draw["folded_uniforms"], "textures": draw["textures"],
+    }
+    if output_path:
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(source)
+        result["output_path"] = output_path
+    else:
+        result["source"] = source
+    return result
+
+
+def _shader_cost(selection: dict[str, object], stage: str, gpu: str, fold_uniforms: bool,
+                 overrides: dict[str, str] | None) -> tuple[dict, dict]:
+    from . import malioc
+
+    params = dict(selection, stage=stage, fold_uniforms=fold_uniforms)
+    if overrides:
+        params["overrides"] = overrides
+    data = bridge.call("get_shader_sources", params, timeout=_LONG_TIMEOUT)
+    reports = malioc.analyze_many(data["sources"], stage=stage, gpu=gpu)
+    return data, reports
+
+
+@mcp.tool
+def analyze_shader_cost(
+    event_ids: list[int] | None = None,
+    marker_filter: str | None = None,
+    event_id_min: int | None = None,
+    event_id_max: int | None = None,
+    stage: Literal["vertex", "pixel"] = "pixel",
+    gpu: str = "Mali-G610",
+    fold_uniforms: bool = True,
+    overrides: dict[str, str] | None = None,
+) -> dict:
+    """
+    Static shader cost with the Mali Offline Compiler (malioc) for the selected draws.
+
+    With fold_uniforms (default), each draw's UnityPerMaterial values are folded
+    into the source, so the reported cycles are for the path that material
+    actually executes (e.g. disabled effect branches are dropped). Identical
+    folded sources are compiled once.
+    Caveat: folding also lets the compiler constant-fold plain math such as
+    lerp(x, y, 0) that the real GPU still executes. It is accurate for code
+    behind uniform branches, but underestimates branch-free shaders; use
+    fold_uniforms=False for the cost the GPU actually pays there.
+
+    Returns per unique source: bound cycles per pixel/vertex, per-pipeline cycles
+    (arith/varying/texture...), work registers, thread occupancy, fp16 ratio and
+    late-ZS / coverage flags (discard), plus which draws use it.
+    Use the device GPU name for 'gpu' (e.g. "Mali-G610", "Mali-G710", "Mali-G76").
+    Requires malioc (Arm Performance Studio) on PATH or MALIOC_PATH.
+    """
+    from . import malioc
+
+    data, reports = _shader_cost(
+        _selection(event_ids, marker_filter, event_id_min, event_id_max),
+        stage, gpu, fold_uniforms, overrides,
+    )
+    by_source: dict[str, dict] = {}
+    for draw in data["draws"]:
+        sid = draw.get("source_id")
+        if sid is None:
+            continue
+        entry = by_source.setdefault(sid, {
+            "source_id": sid, "shader": draw["shader"], "draw_count": 0,
+            "sample_event_ids": [], "textures": draw["textures"], "malioc": reports.get(sid),
+        })
+        entry["draw_count"] += 1
+        if len(entry["sample_event_ids"]) < 5:
+            entry["sample_event_ids"].append(draw["event_id"])
+    sources = sorted(by_source.values(), key=lambda e: -e["draw_count"])
+    return {
+        "gpu": gpu,
+        "malioc_version": malioc.malioc_version(),
+        "stage": stage,
+        "fold_uniforms": fold_uniforms,
+        "draw_count": len(data["draws"]),
+        "unique_sources": len(sources),
+        "sources": sources,
+        "errors": [d for d in data["draws"] if "error" in d],
+    }
+
+
+@mcp.tool
+def estimate_shading_cost(
+    marker_filter: str | None = None,
+    event_id_min: int | None = None,
+    event_id_max: int | None = None,
+    event_ids: list[int] | None = None,
+    gpu: str = "Mali-G610",
+    fold_uniforms: bool = True,
+    top_n: int = 30,
+) -> dict:
+    """
+    Estimate where fragment shading cost goes in a frame:
+    pixels shaded per draw (depth-test overlay, measured on the replay device)
+    × malioc bound cycles per pixel of that draw's material-folded shader.
+
+    Results are grouped by pixel shader with the dominant textures to identify
+    the material. Use it to rank shaders and to compare before/after captures
+    (cycles/pixel is view-independent; total cycles depends on the view).
+    Run it with remote replay for mobile captures.
+    """
+    from . import malioc
+
+    selection = _selection(event_ids, marker_filter, event_id_min, event_id_max)
+    coverage = bridge.call("get_draw_coverage", selection, timeout=_LONG_TIMEOUT)
+    data, reports = _shader_cost(selection, "pixel", gpu, fold_uniforms, None)
+    source_of = {d["event_id"]: d.get("source_id") for d in data["draws"]}
+
+    groups: dict[str, dict] = {}
+    total_cycles = 0.0
+    for draw in coverage["draws"]:
+        sid = source_of.get(draw["event_id"])
+        report = reports.get(sid) if sid else None
+        cyc = report.get("bound_cycles") if report and "error" not in report else None
+        g = groups.setdefault(draw["pixel_shader"], {
+            "pixel_shader": draw["pixel_shader"], "draw_count": 0, "pixels": 0, "occluded_pixels": 0,
+            "cycles": 0.0, "textures": {}, "sample_event_ids": [], "late_zs_draws": 0,
+            "work_registers": set(), "unknown_cost_draws": 0,
+        })
+        g["draw_count"] += 1
+        g["pixels"] += draw["passed"]
+        g["occluded_pixels"] += draw["failed"]
+        if cyc is None:
+            g["unknown_cost_draws"] += 1
+        else:
+            g["cycles"] += draw["passed"] * cyc
+            total_cycles += draw["passed"] * cyc
+            if report.get("uses_late_zs_update") or report.get("modifies_coverage"):
+                g["late_zs_draws"] += 1
+            if report.get("work_registers") is not None:
+                g["work_registers"].add(report["work_registers"])
+        for t in draw["textures"]:
+            g["textures"][t] = g["textures"].get(t, 0) + 1
+        if len(g["sample_event_ids"]) < 5:
+            g["sample_event_ids"].append(draw["event_id"])
+
+    rows = []
+    for g in groups.values():
+        g["cycles_per_pixel"] = round(g["cycles"] / g["pixels"], 3) if g["pixels"] else None
+        g["share_of_cycles"] = round(g["cycles"] / total_cycles, 4) if total_cycles else None
+        g["cycles"] = round(g["cycles"])
+        g["textures"] = [n for n, _ in sorted(g["textures"].items(), key=lambda kv: -kv[1])[:4]]
+        g["work_registers"] = sorted(g["work_registers"])
+        rows.append(g)
+    rows.sort(key=lambda g: -g["cycles"])
+    return {
+        "gpu": gpu,
+        "malioc_version": malioc.malioc_version(),
+        "draw_count": coverage["draw_count"],
+        "total_pixels": coverage["total_passed"],
+        "total_occluded_pixels": coverage["total_failed"],
+        "total_cycles": round(total_cycles),
+        "note": "cycles = sum(pixels_passed x malioc bound cycles); relative ranking, not wall time",
+        "shaders": rows[:top_n],
+    }
+
+
+@mcp.tool
+def save_texture(
+    output_path: str,
+    event_id: int | None = None,
+    resource_id: str | None = None,
+    target: str = "color0",
+    file_type: Literal["png", "jpg", "bmp", "tga", "hdr", "exr", "dds"] = "png",
+) -> dict:
+    """
+    Save a texture to a local image file (works with remote replay too).
+
+    Either pass resource_id, or event_id with target ("color0", "color1", ...,
+    or "depth") to save that event's render target as it is after the event.
+    Useful to eyeball the replayed frame before trusting coverage numbers.
+    """
+    params: dict[str, object] = {"output_path": output_path, "target": target, "file_type": file_type}
+    if event_id is not None:
+        params["event_id"] = event_id
+    if resource_id is not None:
+        params["resource_id"] = resource_id
+    return bridge.call("save_texture", params, timeout=300.0)
+
+
+@mcp.tool
+def pick_pixel(
+    x: int,
+    y: int,
+    event_id: int | None = None,
+    resource_id: str | None = None,
+    target: str = "color0",
+) -> dict:
+    """
+    Read one pixel (color or depth) of a texture or of an event's render target
+    ("color0".., "depth") after that event.
+    """
+    params: dict[str, object] = {"x": x, "y": y, "target": target}
+    if event_id is not None:
+        params["event_id"] = event_id
+    if resource_id is not None:
+        params["resource_id"] = resource_id
+    return bridge.call("pick_pixel", params)
 
 
 def main():

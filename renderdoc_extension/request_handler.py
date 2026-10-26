@@ -29,6 +29,11 @@ class RequestHandler:
             "get_pipeline_state": self._handle_get_pipeline_state,
             "list_captures": self._handle_list_captures,
             "open_capture": self._handle_open_capture,
+            "get_draw_coverage": self._handle_get_draw_coverage,
+            "get_shader_usage": self._handle_get_shader_usage,
+            "get_shader_sources": self._handle_get_shader_sources,
+            "save_texture": self._handle_save_texture,
+            "pick_pixel": self._handle_pick_pixel,
         }
 
     def handle(self, request):
@@ -189,3 +194,59 @@ class RequestHandler:
             raise ValueError("capture_path is required")
         use_remote = params.get("use_remote")  # True/False/None
         return self.facade.open_capture(capture_path, use_remote=use_remote)
+
+    def _handle_get_draw_coverage(self, params):
+        """Handle get_draw_coverage request"""
+        return self.facade.get_draw_coverage(
+            event_ids=params.get("event_ids"),
+            marker_filter=params.get("marker_filter"),
+            event_id_min=params.get("event_id_min"),
+            event_id_max=params.get("event_id_max"),
+        )
+
+    def _handle_get_shader_usage(self, params):
+        """Handle get_shader_usage request"""
+        return self.facade.get_shader_usage(
+            marker_filter=params.get("marker_filter"),
+            event_id_min=params.get("event_id_min"),
+            event_id_max=params.get("event_id_max"),
+        )
+
+    def _handle_get_shader_sources(self, params):
+        """Handle get_shader_sources request"""
+        return self.facade.get_shader_sources(
+            event_ids=params.get("event_ids"),
+            marker_filter=params.get("marker_filter"),
+            event_id_min=params.get("event_id_min"),
+            event_id_max=params.get("event_id_max"),
+            stage=params.get("stage", "pixel"),
+            fold_uniforms=params.get("fold_uniforms", True),
+            fold_blocks=params.get("fold_blocks"),
+            overrides=params.get("overrides"),
+        )
+
+    def _handle_save_texture(self, params):
+        """Handle save_texture request"""
+        output_path = params.get("output_path")
+        if output_path is None:
+            raise ValueError("output_path is required")
+        return self.facade.save_texture(
+            output_path,
+            event_id=params.get("event_id"),
+            resource_id=params.get("resource_id"),
+            target=params.get("target", "color0"),
+            file_type=params.get("file_type", "png"),
+        )
+
+    def _handle_pick_pixel(self, params):
+        """Handle pick_pixel request"""
+        x = params.get("x")
+        y = params.get("y")
+        if x is None or y is None:
+            raise ValueError("x and y are required")
+        return self.facade.pick_pixel(
+            x, y,
+            event_id=params.get("event_id"),
+            resource_id=params.get("resource_id"),
+            target=params.get("target", "color0"),
+        )

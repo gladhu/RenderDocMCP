@@ -38,8 +38,13 @@ def register(version, ctx):
     handler = request_handler.RequestHandler(facade)
 
     # Start socket server
+    ui_invoke = None
+    try:
+        ui_invoke = ctx.Extensions().GetMiniQtHelper().InvokeOntoUIThread
+    except Exception as e:
+        print("[MCP Bridge] MiniQtHelper unavailable: %s" % str(e))
     _server = socket_server.MCPBridgeServer(
-        host="127.0.0.1", port=19876, handler=handler
+        host="127.0.0.1", port=19876, handler=handler, ui_invoke=ui_invoke
     )
     _server.start()
 

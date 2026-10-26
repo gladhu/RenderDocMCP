@@ -101,6 +101,35 @@ uv tool update-shell  # 添加到 PATH
 | `get_texture_data` | 获取纹理的像素数据 (Base64) |
 | `get_pipeline_state` | 获取管线状态 |
 
+### 性能分析工具（本地扩展）
+
+以下工具都通过 replay controller 执行。用 `open_capture(use_remote=True)` 在真机上回放时，overlay、直方图和像素读取都由手机 GPU 完成，可以避开 PC 回放移动端 GLES 抓帧时的画面错误。
+
+| 工具 | 说明 |
+|------|------|
+| `get_draw_coverage` | 逐 DC 统计通过深度测试的像素数和被遮挡的像素数（深度测试 overlay + GPU 直方图，不回传图像） |
+| `get_shader_usage` | 按像素着色器给 DC 分组：DC 数、图元数、常用贴图（用来识别是哪个材质） |
+| `get_shader_source` | 导出 GLSL 源码，可以把 UnityPerMaterial 的实际取值折叠成 `#define`，还原该材质实际执行的分支路径 |
+| `analyze_shader_cost` | 对选中的 DC 跑 malioc（默认按材质参数折叠）：各流水线单元的周期数、寄存器、线程占用率、fp16 比例、late ZS / discard |
+| `estimate_shading_cost` | 用"像素数 × malioc 每像素周期"估算各 Shader 的着色开销占比，用于排热点、对比优化前后 |
+| `save_texture` | 保存贴图或某个事件的 color / depth RT 到本地图片，远程回放时同样可用 |
+| `pick_pixel` | 读取某个事件之后某个像素的颜色或深度 |
+
+> malioc 需要安装 Arm Performance Studio（malioc 在 PATH 里），或者设置环境变量 `MALIOC_PATH`。`gpu` 参数要填真机的 GPU 型号，例如 `Mali-G610`。
+>
+> 在分块渲染的 GPU（Mali / Adreno）上，`get_action_timings` 的逐 DC 计时会把整块 tile 的读写都算进去，数值偏大且加起来不等于帧时间。这类抓帧请用 `estimate_shading_cost`。
+
+### 推荐的移动端分析流程
+
+```
+# 1. 在 RenderDoc 界面左下角 Replay Context 选择手机（adb://...）
+open_capture(capture_path="D:\\farm\\a.rdc", use_remote=True)
+save_texture(output_path="D:\\tmp\\frame.png", event_id=<最后一个事件>)   # 先和真机截图对照
+estimate_shading_cost(marker_filter="DrawOpaqueObjects", gpu="Mali-G610")
+analyze_shader_cost(event_ids=[5503], gpu="Mali-G610")                  # 单个材质的详细开销
+get_shader_source(event_id=5503, fold_uniforms=True, output_path="D:\\tmp\\plant.frag")
+```
+
 ## 使用示例
 
 ### 获取绘制调用列表

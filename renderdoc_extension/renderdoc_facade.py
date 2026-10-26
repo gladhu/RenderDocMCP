@@ -10,6 +10,7 @@ from .services import (
     SearchService,
     ResourceService,
     PipelineService,
+    AnalysisService,
 )
 
 
@@ -23,6 +24,7 @@ class RenderDocFacade:
     - SearchService: Reverse lookup searches
     - ResourceService: Texture and buffer data
     - PipelineService: Pipeline state and shader info
+    - AnalysisService: Coverage, shader sources, texture export
     """
 
     def __init__(self, ctx):
@@ -40,6 +42,7 @@ class RenderDocFacade:
         self._search = SearchService(ctx, self._invoke)
         self._resource = ResourceService(ctx, self._invoke)
         self._pipeline = PipelineService(ctx, self._invoke)
+        self._analysis = AnalysisService(ctx, self._invoke)
 
     def _invoke(self, callback):
         """Invoke callback on replay thread via BlockInvoke"""
@@ -139,3 +142,27 @@ class RenderDocFacade:
     def get_pipeline_state(self, event_id):
         """Get full pipeline state at an event"""
         return self._pipeline.get_pipeline_state(event_id)
+
+    # ==================== Analysis Operations ====================
+
+    def get_draw_coverage(self, event_ids=None, marker_filter=None, event_id_min=None, event_id_max=None):
+        """Per-draw depth-test pixel coverage"""
+        return self._analysis.get_draw_coverage(event_ids, marker_filter, event_id_min, event_id_max)
+
+    def get_shader_usage(self, marker_filter=None, event_id_min=None, event_id_max=None):
+        """Group draw calls by pixel shader"""
+        return self._analysis.get_shader_usage(marker_filter, event_id_min, event_id_max)
+
+    def get_shader_sources(self, event_ids=None, marker_filter=None, event_id_min=None, event_id_max=None,
+                           stage="pixel", fold_uniforms=True, fold_blocks=None, overrides=None):
+        """Shader sources for the selected draws, optionally with material uniforms folded"""
+        return self._analysis.get_shader_sources(event_ids, marker_filter, event_id_min, event_id_max,
+                                                 stage, fold_uniforms, fold_blocks, overrides)
+
+    def save_texture(self, output_path, event_id=None, resource_id=None, target="color0", file_type="png"):
+        """Save a texture or an event's render target to a local file"""
+        return self._analysis.save_texture(output_path, event_id, resource_id, target, file_type)
+
+    def pick_pixel(self, x, y, event_id=None, resource_id=None, target="color0"):
+        """Read a single pixel"""
+        return self._analysis.pick_pixel(x, y, event_id, resource_id, target)

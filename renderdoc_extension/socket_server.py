@@ -5,10 +5,22 @@ Uses file polling since RenderDoc's Python doesn't have socket/QtNetwork modules
 
 import json
 import os
+import threading
+import time
 import traceback
 import tempfile
 
-from PySide2.QtCore import QObject, QTimer
+# PySide2 ships with official RenderDoc builds but not with every custom build
+# (e.g. ones embedding a newer Python). Without it, poll from a worker thread and
+# marshal handling onto the UI thread through MiniQtHelper.InvokeOntoUIThread.
+try:
+    from PySide2.QtCore import QObject, QTimer
+
+    _HAS_PYSIDE = True
+except ImportError:
+    QObject = object
+    QTimer = None
+    _HAS_PYSIDE = False
 
 
 # IPC directory
@@ -21,11 +33,16 @@ LOCK_FILE = os.path.join(IPC_DIR, "lock")
 class MCPBridgeServer(QObject):
     """File-based IPC server for MCP bridge communication"""
 
-    def __init__(self, host, port, handler, parent=None):
-        super(MCPBridgeServer, self).__init__(parent)
+    def __init__(self, host, port, handler, parent=None, ui_invoke=None):
+        if _HAS_PYSIDE:
+            super(MCPBridgeServer, self).__init__(parent)
         self.handler = handler
         self._timer = None
+        self._thread = None
+        self._busy = False
         self._running = False
+        # Callable that runs a function on the UI thread (needed without PySide2)
+        self._ui_invoke = ui_invoke
 
         # Create IPC directory
         if not os.path.exists(IPC_DIR):
@@ -38,12 +55,21 @@ class MCPBridgeServer(QObject):
         # Clean up old files
         self._cleanup_files()
 
-        # Start polling timer (check every 100ms)
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._poll_request)
-        self._timer.start(100)
+        if _HAS_PYSIDE:
+            # Start polling timer (check every 100ms)
+            self._timer = QTimer(self)
+            self._timer.timeout.connect(self._poll_request)
+            self._timer.start(100)
+        elif self._ui_invoke is not None:
+            self._thread = threading.Thread(target=self._poll_loop, name="MCPBridgePoll")
+            self._thread.daemon = True
+            self._thread.start()
+        else:
+            self._running = False
+            print("[MCP Bridge] Neither PySide2 nor a UI invoke function is available")
+            return False
 
-        print("[MCP Bridge] File-based IPC server started")
+        print("[MCP Bridge] File-based IPC server started (%s)" % ("QTimer" if _HAS_PYSIDE else "thread"))
         print("[MCP Bridge] IPC directory: %s" % IPC_DIR)
         return True
 
@@ -53,8 +79,27 @@ class MCPBridgeServer(QObject):
         if self._timer:
             self._timer.stop()
             self._timer = None
+        self._thread = None
         self._cleanup_files()
         print("[MCP Bridge] Server stopped")
+
+    def _poll_loop(self):
+        """Worker-thread poller used when PySide2 is unavailable"""
+        while self._running:
+            if not self._busy and os.path.exists(REQUEST_FILE) and not os.path.exists(LOCK_FILE):
+                self._busy = True
+                try:
+                    self._ui_invoke(self._handle_on_ui_thread)
+                except Exception:
+                    self._busy = False
+                    traceback.print_exc()
+            time.sleep(0.1)
+
+    def _handle_on_ui_thread(self):
+        try:
+            self._poll_request()
+        finally:
+            self._busy = False
 
     def is_running(self):
         """Check if server is running"""

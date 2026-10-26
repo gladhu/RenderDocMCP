@@ -42,3 +42,20 @@ class Parsers:
         if "::" in resource_id_str:
             return int(resource_id_str.split("::")[-1])
         return int(resource_id_str)
+
+    @staticmethod
+    def parse_file_type(file_type_str):
+        """Convert file type string to FileType enum"""
+        type_map = {
+            "png": rd.FileType.PNG,
+            "jpg": rd.FileType.JPG,
+            "bmp": rd.FileType.BMP,
+            "tga": rd.FileType.TGA,
+            "hdr": rd.FileType.HDR,
+            "exr": rd.FileType.EXR,
+            "dds": rd.FileType.DDS,
+        }
+        type_lower = file_type_str.lower()
+        if type_lower not in type_map:
+            raise ValueError("Unknown file type: %s" % file_type_str)
+        return type_map[type_lower]

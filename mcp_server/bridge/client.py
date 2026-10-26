@@ -33,8 +33,9 @@ class RenderDocBridge:
         self.port = port
         self.timeout = 30.0  # seconds
 
-    def call(self, method: str, params: dict[str, Any] | None = None) -> Any:
-        """Call a method on the RenderDoc extension"""
+    def call(self, method: str, params: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
+        """Call a method on the RenderDoc extension (timeout in seconds, default self.timeout)"""
+        timeout = self.timeout if timeout is None else timeout
         # Check if IPC directory exists
         if not os.path.exists(IPC_DIR):
             raise RenderDocBridgeError(
@@ -85,7 +86,7 @@ class RenderDocBridge:
                     return response.get("result")
 
                 # Check timeout
-                if time.time() - start_time > self.timeout:
+                if time.time() - start_time > timeout:
                     raise RenderDocBridgeError("Request timed out")
 
                 # Poll interval
