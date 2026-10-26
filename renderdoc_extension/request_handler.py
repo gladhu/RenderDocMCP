@@ -42,6 +42,8 @@ class RequestHandler:
             "pixel_history": self._handle_pixel_history,
             "read_texture_stats": self._handle_read_texture_stats,
             "sample_pixel_region": self._handle_sample_pixel_region,
+            "get_resource_usage": self._handle_get_resource_usage,
+            "list_shaders": self._handle_list_shaders,
         }
 
     def handle(self, request):
@@ -326,4 +328,18 @@ class RequestHandler:
             height=params.get("height"),
             sample_count=params.get("sample_count", 256),
             anomaly_threshold=params.get("anomaly_threshold", 10.0),
+        )
+
+    def _handle_get_resource_usage(self, params):
+        """Handle get_resource_usage request"""
+        resource_id = params.get("resource_id")
+        if resource_id is None:
+            raise ValueError("resource_id is required")
+        return self.facade.get_resource_usage(resource_id)
+
+    def _handle_list_shaders(self, params):
+        """Handle list_shaders request"""
+        return self.facade.list_shaders(
+            stage=params.get("stage"),
+            top_n=params.get("top_n", 50),
         )

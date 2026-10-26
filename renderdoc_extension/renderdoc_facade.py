@@ -147,6 +147,10 @@ class RenderDocFacade:
         """Texture metadata plus usage events"""
         return self._resource.get_texture_detail(resource_id)
 
+    def get_resource_usage(self, resource_id):
+        """Usage history of a texture or buffer"""
+        return self._resource.get_resource_usage(resource_id)
+
     # ==================== Pipeline Operations ====================
 
     def get_shader_info(self, event_id, stage):
@@ -166,6 +170,10 @@ class RenderDocFacade:
     def get_shader_usage(self, marker_filter=None, event_id_min=None, event_id_max=None):
         """Group draw calls by pixel shader"""
         return self._analysis.get_shader_usage(marker_filter, event_id_min, event_id_max)
+
+    def list_shaders(self, stage=None, top_n=50):
+        """Unique shaders with draw counts"""
+        return self._analysis.list_shaders(stage, top_n)
 
     def get_shader_sources(self, event_ids=None, marker_filter=None, event_id_min=None, event_id_max=None,
                            stage="pixel", fold_uniforms=True, fold_blocks=None, overrides=None):

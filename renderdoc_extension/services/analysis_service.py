@@ -184,6 +184,53 @@ class AnalysisService:
         self._invoke(callback)
         return result["data"]
 
+    def list_shaders(self, stage=None, top_n=50):
+        """Unique shaders in the frame with draw counts and sample events"""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        stages = [stage] if stage else ["vertex", "pixel", "compute"]
+        result = {"data": None}
+
+        def callback(controller):
+            from ..utils import Helpers
+            groups = {}
+            sf = controller.GetStructuredFile()
+            for action in Helpers.flatten_actions(controller.GetRootActions()):
+                if not (action.flags & (rd.ActionFlags.Drawcall | rd.ActionFlags.Dispatch)):
+                    continue
+                controller.SetFrameEvent(action.eventId, False)
+                pipe = controller.GetPipelineState()
+                path = action.GetName(sf)
+                for st in stages:
+                    try:
+                        enum = Parsers.parse_stage(st)
+                    except Exception:
+                        continue
+                    sid = pipe.GetShader(enum)
+                    if sid == rd.ResourceId.Null():
+                        continue
+                    key = "%s:%s" % (st, sid)
+                    g = groups.setdefault(key, {
+                        "stage": st,
+                        "shader": str(sid),
+                        "draw_count": 0,
+                        "sample_event_ids": [],
+                        "sample_markers": [],
+                    })
+                    g["draw_count"] += 1
+                    if len(g["sample_event_ids"]) < 5:
+                        g["sample_event_ids"].append(action.eventId)
+                        g["sample_markers"].append(path)
+            rows = sorted(groups.values(), key=lambda e: -e["draw_count"])
+            result["data"] = {
+                "shader_count": len(rows),
+                "stages": stages,
+                "shaders": rows[: max(1, int(top_n))],
+            }
+
+        self._invoke(callback)
+        return result["data"]
+
     # ==================== Shader sources ====================
 
     def _literal(self, var):

@@ -787,6 +787,27 @@ def sample_pixel_region(
     return bridge.call("sample_pixel_region", params, timeout=_LONG_TIMEOUT)
 
 
+@mcp.tool
+def get_resource_usage(resource_id: str) -> dict:
+    """Usage history of a texture or buffer: event_id, usage enum, read/write/clear kind."""
+    return bridge.call("get_resource_usage", {"resource_id": resource_id}, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
+def list_shaders(
+    stage: Literal["vertex", "pixel", "compute"] | None = None,
+    top_n: int = 50,
+) -> dict:
+    """
+    Unique shaders in the frame (draw + dispatch) with usage counts.
+    Omit stage to list vertex, pixel and compute.
+    """
+    params: dict[str, object] = {"top_n": top_n}
+    if stage is not None:
+        params["stage"] = stage
+    return bridge.call("list_shaders", params, timeout=_LONG_TIMEOUT)
+
+
 # ==================== Analysis prompts ====================
 
 

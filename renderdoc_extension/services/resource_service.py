@@ -311,6 +311,54 @@ class ResourceService:
             raise ValueError(result["error"])
         return result["data"]
 
+    def get_resource_usage(self, resource_id):
+        """Usage history of any resource (texture or buffer)"""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            try:
+                rid = Parsers.parse_resource_id(resource_id)
+            except Exception:
+                result["error"] = "Invalid resource ID: %s" % resource_id
+                return
+            found = False
+            for tex in controller.GetTextures():
+                if tex.resourceId == rid:
+                    found = True
+                    break
+            if not found:
+                for buf in controller.GetBuffers():
+                    if buf.resourceId == rid:
+                        found = True
+                        break
+            if not found:
+                result["error"] = "Resource not found: %s" % resource_id
+                return
+            usages = []
+            try:
+                for u in controller.GetUsage(rid):
+                    usages.append({
+                        "event_id": int(u.eventId),
+                        "usage": str(u.usage),
+                        "kind": _classify_usage(str(u.usage)),
+                    })
+            except Exception as e:
+                result["error"] = "GetUsage failed: %s" % str(e)
+                return
+            result["data"] = {
+                "resource_id": str(rid),
+                "name": self.ctx.GetResourceName(rid),
+                "count": len(usages),
+                "usages": usages,
+            }
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
 
 def _usage_counts(controller, rid):
     counts = {"read": 0, "write": 0, "clear": 0, "eids": []}

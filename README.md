@@ -117,6 +117,8 @@ uv tool update-shell  # 添加到 PATH
 | `find_draws_by_shader` | 按 shader 名（部分匹配）反查 DC，可限定 stage |
 | `find_draws_by_texture` | 按贴图名（部分匹配）反查 DC，搜索 SRV / UAV / RT |
 | `find_draws_by_resource` | 按 ResourceId（完全匹配）反查 DC |
+| `get_resource_usage` | 资源在整帧的读写/Clear 使用历史 |
+| `list_shaders` | 帧内唯一 shader 清单（可按 stage），带 DC 次数 |
 
 ### 管线 / 资源
 
@@ -222,6 +224,8 @@ get_draw_call_details(event_id=123)
 find_draws_by_shader(shader_name="Toon", stage="pixel")
 find_draws_by_texture(texture_name="CharacterSkin")
 find_draws_by_resource(resource_id="ResourceId::12345")
+get_resource_usage(resource_id="ResourceId::12345")
+list_shaders(stage="pixel", top_n=20)
 ```
 
 ### 获取着色器 / 管线信息
