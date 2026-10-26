@@ -156,8 +156,8 @@ uv tool update-shell  # 添加到 PATH
 | `read_texture_stats` | GPU min/max，标记 NaN / Inf / 负值 / 全 0 |
 | `sample_pixel_region` | 网格采样一块区域，报告异常热点 |
 | `analyze_state_changes` | 统计连续 DC 的 shader/blend/depth/cull/RT 切换，找出可合批区间 |
-| `get_post_vs_data` | 变换后顶点属性（vsin / vsout / gsout） |
-| `export_mesh` | 把该 DC 的 post-VS 网格导出为 OBJ |
+| `get_post_vs_data` | 按索引顺序返回变换后顶点；只解码 float/half |
+| `export_mesh` | 按索引缓冲把 post-VS 网格导出为 OBJ（float/half） |
 
 > malioc 需要安装 Arm Performance Studio（`malioc` 在 PATH 里），或者设置环境变量 `MALIOC_PATH`。`gpu` 参数要填真机的 GPU 型号，例如 `Mali-G610`。
 >

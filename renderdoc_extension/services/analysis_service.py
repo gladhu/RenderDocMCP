@@ -643,7 +643,7 @@ class AnalysisService:
         return result["data"]
 
     def get_post_vs_data(self, event_id, stage="vsout", max_vertices=100):
-        """Post-transform vertex attributes after VS or GS"""
+        """Post-transform vertices in draw order (index buffer applied)"""
         if not self.ctx.IsCaptureLoaded():
             raise ValueError("No capture loaded")
         stage_map = {
@@ -664,39 +664,42 @@ class AnalysisService:
             pipe = controller.GetPipelineState()
             refl_stage = rd.ShaderStage.Geometry if stage == "gsout" else rd.ShaderStage.Vertex
             refl = pipe.GetShaderReflection(refl_stage)
-            attrs = []
+            sigs = []
             if refl is not None:
                 sigs = refl.inputSignature if stage == "vsin" else refl.outputSignature
-                for sig in sigs:
-                    name = sig.varName or getattr(sig, "semanticIdxName", "") or sig.semanticName
-                    attrs.append({
-                        "name": str(name),
-                        "var_type": str(sig.varType),
-                        "comp_count": int(sig.compCount),
-                    })
-            total = int(postvs.numIndices)
-            n = min(total, int(max_vertices))
-            stride = int(postvs.vertexByteStride)
-            if stride < 4:
-                result["error"] = "Invalid vertex stride %d" % stride
+            layout = _sig_layout(sigs)
+            try:
+                indices, indexed = _read_draw_indices(controller, postvs, int(max_vertices))
+                raw = _read_vertex_bytes(controller, postvs, indices)
+            except ValueError as e:
+                result["error"] = str(e)
                 return
-            raw = controller.GetBufferData(postvs.vertexResourceId, postvs.vertexByteOffset, n * stride)
-            floats_per = stride // 4
+            stride = int(postvs.vertexByteStride)
             vertices = []
-            for i in range(n):
-                off = i * stride
+            for idx in indices:
+                off = idx * stride
                 if off + stride > len(raw):
                     break
-                verts = list(struct.unpack_from("%df" % floats_per, raw, off))
-                vertices.append([round(v, 6) for v in verts])
+                chunk = raw[off:off + stride]
+                values = {}
+                unsupported = []
+                for attr in layout:
+                    decoded = _decode_comps(chunk, attr)
+                    if decoded is None:
+                        unsupported.append(attr["name"])
+                    else:
+                        values[attr["name"]] = decoded
+                vertices.append({"values": values, "unsupported": unsupported})
             result["data"] = {
                 "event_id": int(event_id),
                 "stage": stage,
-                "attributes": attrs,
+                "indexed": indexed,
+                "attributes": [_public_attr(a) for a in layout],
                 "vertex_stride": stride,
-                "total_vertices": total,
+                "total_indices": int(postvs.numIndices),
                 "returned_vertices": len(vertices),
                 "vertices": vertices,
+                "note": "values are in draw order after the index buffer; only float/half are decoded",
             }
 
         self._invoke(callback)
@@ -705,7 +708,7 @@ class AnalysisService:
         return result["data"]
 
     def export_mesh(self, event_id, output_path):
-        """Export post-VS mesh as OBJ (position / normal / uv when present)"""
+        """Export the indexed post-VS mesh as OBJ (float/half position, normal, uv)"""
         if not self.ctx.IsCaptureLoaded():
             raise ValueError("No capture loaded")
         if not output_path:
@@ -720,61 +723,62 @@ class AnalysisService:
                 return
             pipe = controller.GetPipelineState()
             refl = pipe.GetShaderReflection(rd.ShaderStage.Vertex)
-            pos_i = 0
-            nrm_i = uv_i = None
-            float_off = 0
-            if refl is not None:
-                for sig in refl.outputSignature:
-                    name = (sig.semanticName or sig.varName or "").upper()
-                    if "POSITION" in name and pos_i == 0:
-                        pos_i = float_off
-                    elif "NORMAL" in name and nrm_i is None:
-                        nrm_i = float_off
-                    elif "TEXCOORD" in name and uv_i is None:
-                        uv_i = float_off
-                    float_off += int(sig.compCount)
-            total = int(postvs.numIndices)
-            stride = int(postvs.vertexByteStride)
-            if stride < 4:
-                result["error"] = "Invalid vertex stride %d" % stride
+            layout = _sig_layout(refl.outputSignature if refl is not None else [])
+            pos = _find_attr(layout, "POSITION")
+            nrm = _find_attr(layout, "NORMAL")
+            uv = _find_attr(layout, "TEXCOORD")
+            if pos is None:
+                result["error"] = "No POSITION output on the vertex shader"
                 return
-            raw = controller.GetBufferData(postvs.vertexResourceId, postvs.vertexByteOffset, total * stride)
-            floats_per = stride // 4
-            positions, normals, uvs = [], [], []
-            for i in range(total):
-                off = i * stride
-                if off + stride > len(raw):
-                    break
-                vf = list(struct.unpack_from("%df" % floats_per, raw, off))
-                if pos_i + 2 < len(vf):
-                    positions.append((vf[pos_i], vf[pos_i + 1], vf[pos_i + 2]))
-                if nrm_i is not None and nrm_i + 2 < len(vf):
-                    normals.append((vf[nrm_i], vf[nrm_i + 1], vf[nrm_i + 2]))
-                if uv_i is not None and uv_i + 1 < len(vf):
-                    uvs.append((vf[uv_i], vf[uv_i + 1]))
-
-            topo = "TriangleList"
+            for attr in (pos, nrm, uv):
+                if attr is not None and attr["kind"] not in ("float", "half"):
+                    result["error"] = "Attribute %s is %s; only float/half can be exported" % (
+                        attr["name"], attr["var_type"]
+                    )
+                    return
             try:
-                topo = str(pipe.GetPrimitiveTopology())
-            except Exception:
-                pass
+                indices, indexed = _read_draw_indices(controller, postvs, None)
+                raw = _read_vertex_bytes(controller, postvs, indices)
+            except ValueError as e:
+                result["error"] = str(e)
+                return
+            stride = int(postvs.vertexByteStride)
+            topo = _topology_name(postvs, pipe)
+            runs = _split_restart(indices)
+            positions, normals, uvs = [], [], []
             triangles = []
-            if "Strip" in topo:
-                for i in range(len(positions) - 2):
-                    triangles.append((i, i + 1, i + 2) if i % 2 == 0 else (i, i + 2, i + 1))
-            elif "Fan" in topo:
-                for i in range(1, len(positions) - 1):
-                    triangles.append((0, i, i + 1))
-            else:
-                for i in range(0, len(positions) - 2, 3):
-                    triangles.append((i, i + 1, i + 2))
+            for run in runs:
+                decoded = []
+                for idx in run:
+                    off = idx * stride
+                    if off + stride > len(raw):
+                        decoded.append(None)
+                        continue
+                    chunk = raw[off:off + stride]
+                    decoded.append((
+                        _decode_comps(chunk, pos),
+                        _decode_comps(chunk, nrm) if nrm else None,
+                        _decode_comps(chunk, uv) if uv else None,
+                    ))
+                local = []
+                for item in decoded:
+                    if item is None or item[0] is None or len(item[0]) < 3:
+                        local.append(None)
+                        continue
+                    local.append(len(positions))
+                    positions.append(tuple(item[0][:3]))
+                    if item[1] is not None and len(item[1]) >= 3:
+                        normals.append(tuple(item[1][:3]))
+                    if item[2] is not None and len(item[2]) >= 2:
+                        uvs.append(tuple(item[2][:2]))
+                triangles.extend(_faces_from_run(local, topo))
 
             folder = os.path.dirname(output_path)
             if folder and not os.path.isdir(folder):
                 os.makedirs(folder)
             lines = [
                 "# RenderDoc MCP mesh event %d" % int(event_id),
-                "# vertices %d topology %s" % (len(positions), topo),
+                "# vertices %d topology %s indexed %s" % (len(positions), topo, indexed),
             ]
             for p in positions:
                 lines.append("v %.6f %.6f %.6f" % p)
@@ -800,6 +804,7 @@ class AnalysisService:
                 "event_id": int(event_id),
                 "output_path": output_path,
                 "topology": topo,
+                "indexed": indexed,
                 "vertices": len(positions),
                 "normals": len(normals),
                 "uvs": len(uvs),
@@ -810,3 +815,159 @@ class AnalysisService:
         if result["error"]:
             raise ValueError(result["error"])
         return result["data"]
+
+
+def _component_kind(var_type):
+    name = str(var_type).upper()
+    if "DOUBLE" in name:
+        return "double"
+    if "HALF" in name or "FLOAT16" in name:
+        return "half"
+    if "FLOAT" in name:
+        return "float"
+    return "other"
+
+
+def _component_size(kind):
+    return {"double": 8, "half": 2, "float": 4}.get(kind, 4)
+
+
+def _sig_layout(sigs):
+    layout = []
+    offset = 0
+    for sig in sigs:
+        kind = _component_kind(sig.varType)
+        comps = int(sig.compCount)
+        name = str(sig.varName or getattr(sig, "semanticName", "") or "")
+        layout.append({
+            "name": name,
+            "semantic": str(getattr(sig, "semanticName", "") or name).upper(),
+            "var_type": str(sig.varType),
+            "comp_count": comps,
+            "byte_offset": offset,
+            "kind": kind,
+        })
+        offset += _component_size(kind) * max(comps, 1)
+        if offset % 4:
+            offset += 4 - (offset % 4)
+    return layout
+
+
+def _public_attr(attr):
+    return {
+        "name": attr["name"],
+        "var_type": attr["var_type"],
+        "comp_count": attr["comp_count"],
+        "byte_offset": attr["byte_offset"],
+        "decoded": attr["kind"] in ("float", "half", "double"),
+    }
+
+
+def _find_attr(layout, token):
+    for attr in layout:
+        if token in attr["semantic"] or token in attr["name"].upper():
+            return attr
+    return None
+
+
+def _decode_comps(chunk, attr):
+    if attr is None or attr["kind"] not in ("float", "half", "double"):
+        return None
+    fmt = {"float": "f", "half": "e", "double": "d"}[attr["kind"]]
+    size = _component_size(attr["kind"])
+    values = []
+    for i in range(attr["comp_count"]):
+        off = attr["byte_offset"] + i * size
+        if off + size > len(chunk):
+            return None
+        values.append(round(struct.unpack_from(fmt, chunk, off)[0], 6))
+    return values
+
+
+def _read_draw_indices(controller, postvs, limit):
+    """Draw-order vertex indices. -1 is primitive restart."""
+    total = int(postvs.numIndices)
+    count = total if limit is None else min(total, max(0, int(limit)))
+    idx_id = getattr(postvs, "indexResourceId", rd.ResourceId.Null())
+    stride = int(getattr(postvs, "indexByteStride", 0) or 0)
+    indexed = idx_id != rd.ResourceId.Null() and stride in (2, 4)
+    if not indexed:
+        return list(range(count)), False
+    raw = bytes(controller.GetBufferData(
+        idx_id, int(getattr(postvs, "indexByteOffset", 0) or 0), count * stride
+    ))
+    fmt = "H" if stride == 2 else "I"
+    restart = 0xFFFF if stride == 2 else 0xFFFFFFFF
+    base = int(getattr(postvs, "baseVertex", 0) or 0)
+    indices = []
+    for i in range(count):
+        off = i * stride
+        if off + stride > len(raw):
+            break
+        value = struct.unpack_from(fmt, raw, off)[0]
+        indices.append(-1 if value == restart else base + value)
+    return indices, True
+
+
+def _read_vertex_bytes(controller, postvs, indices):
+    stride = int(postvs.vertexByteStride)
+    if stride <= 0:
+        raise ValueError("Invalid vertex stride %d" % stride)
+    real = [i for i in indices if i >= 0]
+    if not real:
+        return b""
+    max_i = max(real)
+    if max_i > 5000000:
+        raise ValueError("Vertex index %d is too large to read" % max_i)
+    return bytes(controller.GetBufferData(
+        postvs.vertexResourceId, int(postvs.vertexByteOffset), (max_i + 1) * stride
+    ))
+
+
+def _split_restart(indices):
+    runs = []
+    current = []
+    for idx in indices:
+        if idx < 0:
+            if current:
+                runs.append(current)
+                current = []
+            continue
+        current.append(idx)
+    if current:
+        runs.append(current)
+    return runs
+
+
+def _topology_name(postvs, pipe):
+    topo = str(getattr(postvs, "topology", "") or "")
+    if topo and topo != "None":
+        return topo
+    try:
+        return str(pipe.GetPrimitiveTopology())
+    except Exception:
+        return "TriangleList"
+
+
+def _faces_from_run(slots, topo):
+    """slots[i] is an OBJ vertex index, or None when that corner failed to decode."""
+    faces = []
+    if "Strip" in topo:
+        for i in range(len(slots) - 2):
+            tri = slots[i:i + 3]
+            if None in tri:
+                continue
+            faces.append((tri[0], tri[2], tri[1]) if i % 2 else (tri[0], tri[1], tri[2]))
+    elif "Fan" in topo:
+        if slots and slots[0] is not None:
+            for i in range(1, len(slots) - 1):
+                if slots[i] is None or slots[i + 1] is None:
+                    continue
+                faces.append((slots[0], slots[i], slots[i + 1]))
+    else:
+        for i in range(0, len(slots) - 2, 3):
+            tri = slots[i:i + 3]
+            if None in tri:
+                continue
+            faces.append((tri[0], tri[1], tri[2]))
+    return faces
