@@ -4,6 +4,8 @@ Heuristic diagnostics for mobile / tile-based GPUs.
 Uses only official ReplayController APIs (textures, actions, optional GLSL scan).
 """
 
+import re
+
 import renderdoc as rd
 
 from ..utils import Helpers
@@ -39,12 +41,7 @@ class DiagnosisService:
             props = controller.GetAPIProperties()
             api = str(props.pipelineType)
             vendor = str(getattr(props, "vendor", ""))
-            driver = ""
-            try:
-                driver = str(controller.GetStructuredFile().version or "")
-            except Exception:
-                pass
-            blob = " ".join([api, vendor, driver]).upper()
+            family = Helpers.gpu_family(api, vendor)
 
             textures = list(controller.GetTextures())
             name_of = {}
@@ -55,7 +52,7 @@ class DiagnosisService:
             rt_counts = {}
             rt_clears = {}
             discard_draws = 0
-            sampled_shaders = set()
+            sampled_shaders = {}
 
             for action in actions:
                 if action.flags & rd.ActionFlags.Drawcall:
@@ -96,7 +93,7 @@ class DiagnosisService:
                 if discard_draws > 0:
                     risks.append({
                         "category": "performance",
-                        "severity": "medium" if ("MALI" in blob or "ARM" in blob) else "low",
+                        "severity": "medium" if family == "mali" else "low",
                         "title": "检测到 discard: %d 个 DC 的像素着色器含 discard" % discard_draws,
                         "detail": "discard 会关掉 early-Z，Mali/部分 TBR 上 overdraw 会升高",
                         "fix": "改用 alpha-to-coverage、pre-Z，或把测试推到 alpha clip 之外",
@@ -113,7 +110,7 @@ class DiagnosisService:
                             "fix": "降低分辨率或使用纹理流式加载",
                         })
             if "gpu_specific" in cats:
-                for q in Helpers.gpu_quirks(api, vendor, driver):
+                for q in Helpers.gpu_quirks(api, vendor):
                     sev = "medium" if ("mediump" in q or "discard" in q or "R11G11B10" in q) else "low"
                     risks.append({
                         "category": "gpu_specific",
@@ -172,6 +169,7 @@ class DiagnosisService:
 
             walk(controller.GetRootActions(), [])
             change_counts = dict((t, 0) for t in track)
+            saw_value = dict((t, False) for t in track)
             prev = {}
             runs = []
             current = None
@@ -208,13 +206,16 @@ class DiagnosisService:
                         cur["depth"] = None
                 if "cull" in track:
                     try:
-                        rast = pipe.GetRasterizerState() if hasattr(pipe, "GetRasterizerState") else pipe.GetRasterizer()
-                        cur["cull"] = str(getattr(rast, "cullMode", None))
+                        rast = pipe.GetRasterizer()
+                        cur["cull"] = str(rast.cullMode)
                     except Exception:
                         cur["cull"] = None
                 if "render_target" in track:
                     cur["render_target"] = Helpers.action_rt_key(action)
 
+                for field, value in cur.items():
+                    if value is not None:
+                        saw_value[field] = True
                 changed = []
                 if prev:
                     for field in track:
@@ -249,10 +250,13 @@ class DiagnosisService:
                     "事件 %s–%s 连续 %d 个 DC 状态相同，可考虑 instancing 合并"
                     % (best["start_event"], best["end_event"], best["count"])
                 )
+            unavailable = [name for name in ("shader", "blend", "depth", "cull")
+                           if name in track and not saw_value.get(name)]
             result["data"] = {
                 "analyzed_draws": analyzed,
                 "total_draws": len(draws),
                 "change_counts": change_counts,
+                "unavailable": unavailable,
                 "batching_opportunities": runs[:5],
                 "suggestions": suggestions,
             }
@@ -304,7 +308,7 @@ def _precision_risks(textures, name_of, actions):
 
 
 def _shader_has_discard(controller, action, sampled):
-    """True if the pixel shader GLSL contains a discard (best-effort, GLES only)"""
+    """True if the pixel shader GLSL contains a discard statement (GLES only)"""
     try:
         controller.SetFrameEvent(action.eventId, False)
         pipe = controller.GetPipelineState()
@@ -313,12 +317,21 @@ def _shader_has_discard(controller, action, sampled):
             return False
         key = str(shader)
         if key in sampled:
-            return False
-        sampled.add(key)
+            return sampled[key]
         refl = pipe.GetShaderReflection(rd.ShaderStage.Pixel)
         files = refl.debugInfo.files
-        if files and files[0].contents and "discard" in str(files[0].contents):
-            return True
+        has = bool(files and files[0].contents and _glsl_has_discard(str(files[0].contents)))
+        sampled[key] = has
+        return has
     except Exception:
         return False
-    return False
+
+
+_DISCARD_RE = re.compile(r"\bdiscard\b")
+
+
+def _glsl_has_discard(source):
+    """Match the discard keyword, not comments or longer identifiers."""
+    text = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+    text = re.sub(r"//.*?$", "", text, flags=re.M)
+    return _DISCARD_RE.search(text) is not None
