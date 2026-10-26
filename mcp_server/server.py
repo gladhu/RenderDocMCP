@@ -693,6 +693,32 @@ def get_pass_detail(pass_index: int) -> dict:
     return bridge.call("get_pass_detail", {"pass_index": pass_index}, timeout=_LONG_TIMEOUT)
 
 
+@mcp.tool
+def list_frame_textures(
+    sort_by: Literal["size", "usage", "name"] = "size",
+    top_n: int = 50,
+    filter_fmt: str | None = None,
+    min_width: int | None = None,
+    rt_only: bool = False,
+) -> dict:
+    """
+    Frame-level texture inventory: format, resolution, estimated size,
+    read/write/clear counts, and whether it is used as a render target.
+    """
+    params: dict[str, object] = {"sort_by": sort_by, "top_n": top_n, "rt_only": rt_only}
+    if filter_fmt is not None:
+        params["filter_fmt"] = filter_fmt
+    if min_width is not None:
+        params["min_width"] = min_width
+    return bridge.call("list_frame_textures", params, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
+def get_texture_detail(resource_id: str) -> dict:
+    """Texture metadata plus the full GetUsage event list."""
+    return bridge.call("get_texture_detail", {"resource_id": resource_id}, timeout=_LONG_TIMEOUT)
+
+
 # ==================== Analysis prompts ====================
 
 

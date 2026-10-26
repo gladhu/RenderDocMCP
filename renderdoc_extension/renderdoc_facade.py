@@ -139,6 +139,14 @@ class RenderDocFacade:
         """Get texture pixel data"""
         return self._resource.get_texture_data(resource_id, mip, slice, sample, depth_slice)
 
+    def list_frame_textures(self, sort_by="size", top_n=50, filter_fmt=None, min_width=None, rt_only=False):
+        """Frame-level texture inventory"""
+        return self._resource.list_frame_textures(sort_by, top_n, filter_fmt, min_width, rt_only)
+
+    def get_texture_detail(self, resource_id):
+        """Texture metadata plus usage events"""
+        return self._resource.get_texture_detail(resource_id)
+
     # ==================== Pipeline Operations ====================
 
     def get_shader_info(self, event_id, stage):

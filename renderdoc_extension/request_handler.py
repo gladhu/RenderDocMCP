@@ -37,6 +37,8 @@ class RequestHandler:
             "diagnose_mobile_risks": self._handle_diagnose_mobile_risks,
             "get_renderpass_list": self._handle_get_renderpass_list,
             "get_pass_detail": self._handle_get_pass_detail,
+            "list_frame_textures": self._handle_list_frame_textures,
+            "get_texture_detail": self._handle_get_texture_detail,
         }
 
     def handle(self, request):
@@ -271,3 +273,20 @@ class RequestHandler:
         if pass_index is None:
             raise ValueError("pass_index is required")
         return self.facade.get_pass_detail(int(pass_index))
+
+    def _handle_list_frame_textures(self, params):
+        """Handle list_frame_textures request"""
+        return self.facade.list_frame_textures(
+            sort_by=params.get("sort_by", "size"),
+            top_n=params.get("top_n", 50),
+            filter_fmt=params.get("filter_fmt"),
+            min_width=params.get("min_width"),
+            rt_only=params.get("rt_only", False),
+        )
+
+    def _handle_get_texture_detail(self, params):
+        """Handle get_texture_detail request"""
+        resource_id = params.get("resource_id")
+        if resource_id is None:
+            raise ValueError("resource_id is required")
+        return self.facade.get_texture_detail(resource_id)

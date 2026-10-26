@@ -127,6 +127,8 @@ uv tool update-shell  # 添加到 PATH
 | `get_buffer_contents` | 读取 buffer（可指定 offset/length，Base64） |
 | `get_texture_info` | 贴图元数据（尺寸、格式、mip 等） |
 | `get_texture_data` | 贴图像素数据（mip / slice / 3D slice，Base64） |
+| `list_frame_textures` | 帧内贴图清单：尺寸、格式、显存估算、读写/Clear 次数、是否 RT |
+| `get_texture_detail` | 单张贴图元数据 + 完整 usage 事件列表 |
 
 ### GPU 计时
 
@@ -242,6 +244,9 @@ get_texture_data(resource_id="ResourceId::456", slice=3)
 get_texture_data(resource_id="ResourceId::789", depth_slice=5)
 
 get_texture_info(resource_id="ResourceId::123")
+list_frame_textures(sort_by="size", top_n=20)
+list_frame_textures(rt_only=true, sort_by="usage")
+get_texture_detail(resource_id="ResourceId::123")
 ```
 
 ### 部分获取缓冲区数据

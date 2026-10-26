@@ -6,7 +6,7 @@ import base64
 
 import renderdoc as rd
 
-from ..utils import Parsers
+from ..utils import Parsers, Helpers
 
 
 class ResourceService:
@@ -212,3 +212,125 @@ class ResourceService:
         if result["error"]:
             raise ValueError(result["error"])
         return result["data"]
+
+    def list_frame_textures(self, sort_by="size", top_n=50, filter_fmt=None, min_width=None, rt_only=False):
+        """Frame-level texture inventory with size and usage counts"""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        result = {"data": None}
+
+        def callback(controller):
+            rt_ids = set()
+            for action in Helpers.flatten_actions(controller.GetRootActions()):
+                if action.flags & (rd.ActionFlags.Drawcall | rd.ActionFlags.Clear):
+                    for o in action.outputs:
+                        if o != rd.ResourceId.Null():
+                            rt_ids.add(str(o))
+                    if action.depthOut != rd.ResourceId.Null():
+                        rt_ids.add(str(action.depthOut))
+
+            rows = []
+            for tex in controller.GetTextures():
+                rid = str(tex.resourceId)
+                fmt = str(tex.format.Name())
+                if filter_fmt and filter_fmt.upper() not in fmt.upper():
+                    continue
+                if min_width is not None and tex.width < int(min_width):
+                    continue
+                is_rt = rid in rt_ids
+                if rt_only and not is_rt:
+                    continue
+                usage = _usage_counts(controller, tex.resourceId)
+                size = int(getattr(tex, "byteSize", 0) or 0) or Helpers.estimate_texture_bytes(tex)
+                rows.append({
+                    "resource_id": rid,
+                    "name": self.ctx.GetResourceName(tex.resourceId),
+                    "width": tex.width,
+                    "height": tex.height,
+                    "depth": tex.depth,
+                    "array_size": tex.arraysize,
+                    "mips": tex.mips,
+                    "format": fmt,
+                    "dimension": str(tex.type),
+                    "size_bytes": size,
+                    "size_mb": round(size / (1024.0 * 1024.0), 3),
+                    "is_render_target": is_rt,
+                    "read_count": usage["read"],
+                    "write_count": usage["write"],
+                    "clear_count": usage["clear"],
+                    "total_usage_count": usage["read"] + usage["write"] + usage["clear"],
+                    "sample_event_ids": usage["eids"][:8],
+                })
+
+            key_fn = {
+                "size": lambda e: -e["size_bytes"],
+                "usage": lambda e: -e["total_usage_count"],
+                "name": lambda e: e["name"] or e["resource_id"],
+            }.get(sort_by, lambda e: -e["size_bytes"])
+            rows.sort(key=key_fn)
+            total = sum(r["size_bytes"] for r in rows)
+            result["data"] = {
+                "total_textures": len(rows),
+                "total_size_mb": round(total / (1024.0 * 1024.0), 2),
+                "sort_by": sort_by,
+                "textures": rows[: max(1, int(top_n))],
+            }
+
+        self._invoke(callback)
+        return result["data"]
+
+    def get_texture_detail(self, resource_id):
+        """Single texture metadata plus full usage event list"""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        info = self.get_texture_info(resource_id)
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            tex = self._find_texture_by_id(controller, resource_id)
+            if not tex:
+                result["error"] = "Texture not found: %s" % resource_id
+                return
+            usages = []
+            try:
+                for u in controller.GetUsage(tex.resourceId):
+                    usages.append({
+                        "event_id": int(u.eventId),
+                        "usage": str(u.usage),
+                    })
+            except Exception:
+                pass
+            detail = dict(info)
+            detail["name"] = self.ctx.GetResourceName(tex.resourceId)
+            detail["usages"] = usages
+            detail["usage_count"] = len(usages)
+            result["data"] = detail
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+
+def _usage_counts(controller, rid):
+    counts = {"read": 0, "write": 0, "clear": 0, "eids": []}
+    try:
+        for u in controller.GetUsage(rid):
+            kind = _classify_usage(str(u.usage))
+            if kind in counts:
+                counts[kind] += 1
+            counts["eids"].append(int(u.eventId))
+    except Exception:
+        pass
+    return counts
+
+
+def _classify_usage(usage_str):
+    s = usage_str
+    if "Clear" in s:
+        return "clear"
+    if any(tok in s for tok in ("ColorTarget", "DepthStencil", "RWResource", "CopyDst", "ResolveDst")):
+        return "write"
+    if any(tok in s for tok in ("Resource", "CopySrc", "ResolveSrc", "InputTarget", "VertexBuffer", "IndexBuffer")):
+        return "read"
+    return "other"
