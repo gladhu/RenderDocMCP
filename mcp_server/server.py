@@ -653,6 +653,78 @@ def pick_pixel(
     return bridge.call("pick_pixel", params)
 
 
+# ==================== Analysis prompts ====================
+
+
+@mcp.prompt
+def full_frame_analysis() -> str:
+    """Complete frame analysis workflow: remote replay, pass overview, shading cost, then drill-down."""
+    return """执行完整帧分析，按顺序调用工具，每步先核对结果再继续：
+
+1. `get_replay_context` — 确认 Replay Context。移动端抓帧必须 remote_connected=true。
+2. 若尚未打开抓帧：`open_capture(capture_path=..., use_remote=True)`（移动端）或省略 use_remote。
+3. `get_capture_status` / `get_frame_summary` — API、DC 数、顶层 marker、GPU quirks。
+4. `get_renderpass_list` — 看 Pass 划分和每个 Pass 的 DC / RT。
+5. `list_frame_textures(sort_by="size", top_n=20)` — 最大/最常用贴图。
+6. `get_shader_usage` — 按像素 shader 聚合，识别材质。
+7. 移动端：`save_texture` 导出最后一事件的 color0，对照真机截图后再信后续数字。
+8. 移动端：`estimate_shading_cost(gpu="Mali-G610")` 排着色热点；桌面：`get_action_timings`。
+9. `diagnose_mobile_risks` — 精度 / 性能 / 兼容性 / GPU 特性。
+10. 综合给出按影响排序的建议：Pass 是否过多、贴图是否过大、哪些 shader 最贵、有无被遮挡的大 DC。"""
+
+
+@mcp.prompt
+def debug_draw_call(event_id: int) -> str:
+    """Deep-dive a single draw call: pipeline, bindings, shader, output."""
+    return f"""逐步分析 event {event_id} 的 DrawCall：
+
+1. `get_draw_call_details(event_id={event_id})` — 顶点/实例/输出。
+2. `get_pipeline_state(event_id={event_id})` — 绑定的 shader、RT、viewport、blend。
+3. `get_shader_info(event_id={event_id}, stage="pixel")` 和 stage="vertex"。
+4. `get_shader_source(event_id={event_id}, fold_uniforms=True)` — GLES 时还原材质分支。
+5. `analyze_shader_cost(event_ids=[{event_id}], gpu="Mali-G610")` — 移动端静态开销。
+6. `save_texture` / `pick_pixel` 检查该事件后的 color0 / depth。
+7. 总结这个 DC 画了什么、绑定是否合理、有无精度或 discard / late-Z 风险。"""
+
+
+@mcp.prompt
+def analyze_performance() -> str:
+    """Performance workflow: rank passes and shaders, then mobile risks."""
+    return """分析这一帧的性能问题：
+
+1. `get_replay_context` + `get_frame_summary` — 确认回放设备和帧规模。
+2. `get_renderpass_list(sort_by="draw_count")` — DC 最多的 Pass。
+3. 移动端（Mali/Adreno/PowerVR）：
+   - 不要用 `get_action_timings` 排热点（tile flush 会把时间撑大）。
+   - `estimate_shading_cost` 按「像素 × malioc 周期」排序。
+   - `get_draw_coverage` 看遮挡比高的 DC。
+4. 桌面 GPU：`get_action_timings` 看耗时最长的 action。
+5. `list_frame_textures(sort_by="size")` — 最大贴图和未使用 mip。
+6. `analyze_state_changes` — shader / RT 切换是否过碎，有无可合批区间。
+7. `diagnose_mobile_risks` — 全屏 Clear 过多、超大贴图、R11G11B10、discard。
+8. 按影响列出建议：是什么、在哪个 event/Pass、严重程度、怎么改。"""
+
+
+@mcp.prompt
+def find_rendering_issue(description: str) -> str:
+    """Systematic visual-bug diagnosis from a problem description."""
+    return f"""根据问题描述系统排查渲染异常。
+
+问题：{description}
+
+1. `get_frame_summary` + `get_renderpass_list` — 锁定相关 Pass（按 RT / marker）。
+2. `get_pass_detail` 看该 Pass 里的 DC。
+3. 对可疑 DC：
+   - `get_pipeline_state` / `get_draw_call_details`
+   - `save_texture` 或 `pick_pixel` 看输出
+   - `read_texture_stats` 查 NaN / Inf / 负值 / 全 0
+4. 像素异常（黑块、花屏、闪点）：
+   - `sample_pixel_region` 扫区域
+   - `pixel_history` 追哪些 DC 写过这个像素、depth/stencil/discard 是否失败
+5. 精度怀疑：`diagnose_mobile_risks(check_categories=["precision"])`
+6. 给出根因和修复建议，并附 event_id / resource_id 证据。"""
+
+
 def main():
     """Run the MCP server"""
     mcp.run()

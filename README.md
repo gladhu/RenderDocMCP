@@ -152,6 +152,17 @@ uv tool update-shell  # 添加到 PATH
 >
 > `analyze_shader_cost` 默认 `fold_uniforms=True`，对 uniform 分支准确，但对无分支 shader 会把 `lerp(x, y, 0)` 这类运算也常量折叠掉，可能低估真实开销；无分支材质请设 `fold_uniforms=False`。
 
+### 分析提示词（MCP Prompt）
+
+给 AI 的固定工作流，客户端可直接选用：
+
+| Prompt | 说明 |
+|------|------|
+| `full_frame_analysis` | 完整帧分析：回放设备 → Pass / 贴图 / shader → 着色开销 → 移动端风险 |
+| `debug_draw_call` | 单个 DC：管线、绑定、源码、malioc、输出 |
+| `analyze_performance` | 性能：Pass 热点、coverage / shading cost、状态切换、合批 |
+| `find_rendering_issue` | 按问题描述排查：Pass → 像素统计 / history → 精度诊断 |
+
 ### 推荐的移动端分析流程
 
 ```
