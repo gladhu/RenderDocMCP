@@ -726,13 +726,15 @@ def pixel_history(
     event_id: int | None = None,
     resource_id: str | None = None,
     target: str = "color0",
+    max_entries: int = 200,
 ) -> dict:
     """
     Modification history of one pixel: which draws wrote it, pre/post color,
     and why a fragment failed (depth, stencil, discard, scissor, backface).
     Needs a render target via event_id+target or resource_id.
+    max_entries caps the returned list (total_count / truncated still report the full size).
     """
-    params: dict[str, object] = {"x": x, "y": y, "target": target}
+    params: dict[str, object] = {"x": x, "y": y, "target": target, "max_entries": max_entries}
     if event_id is not None:
         params["event_id"] = event_id
     if resource_id is not None:
@@ -747,7 +749,8 @@ def read_texture_stats(
     target: str = "color0",
 ) -> dict:
     """
-    GPU min/max of a texture (GetMinMax). Flags has_negative / has_inf / has_nan / all_zero.
+    GPU min/max of a texture (GetMinMax). Depth targets are queried as CompType.Depth.
+    Flags: has_negative / has_inf / has_nan / all_zero.
     """
     params: dict[str, object] = {"target": target}
     if event_id is not None:

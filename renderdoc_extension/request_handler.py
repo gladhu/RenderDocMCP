@@ -309,6 +309,7 @@ class RequestHandler:
             event_id=params.get("event_id"),
             resource_id=params.get("resource_id"),
             target=params.get("target", "color0"),
+            max_entries=params.get("max_entries", 200),
         )
 
     def _handle_read_texture_stats(self, params):

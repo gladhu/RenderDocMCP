@@ -189,9 +189,9 @@ class RenderDocFacade:
         """Read a single pixel"""
         return self._analysis.pick_pixel(x, y, event_id, resource_id, target)
 
-    def pixel_history(self, x, y, event_id=None, resource_id=None, target="color0"):
+    def pixel_history(self, x, y, event_id=None, resource_id=None, target="color0", max_entries=200):
         """Pixel modification history"""
-        return self._analysis.pixel_history(x, y, event_id, resource_id, target)
+        return self._analysis.pixel_history(x, y, event_id, resource_id, target, max_entries)
 
     def read_texture_stats(self, event_id=None, resource_id=None, target="color0"):
         """GPU min/max with NaN/Inf/negative flags"""

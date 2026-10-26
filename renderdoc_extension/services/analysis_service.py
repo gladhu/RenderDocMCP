@@ -454,7 +454,7 @@ class AnalysisService:
         self._invoke(callback)
         return result["data"]
 
-    def pixel_history(self, x, y, event_id=None, resource_id=None, target="color0"):
+    def pixel_history(self, x, y, event_id=None, resource_id=None, target="color0", max_entries=200):
         """Which draws modified this pixel, with pass/fail reasons"""
         if not self.ctx.IsCaptureLoaded():
             raise ValueError("No capture loaded")
@@ -514,12 +514,15 @@ class AnalysisService:
                 except Exception:
                     pass
                 mods.append(entry)
+            limit = max(1, int(max_entries))
             result["data"] = {
                 "resource_id": str(tex.resourceId),
                 "x": int(x),
                 "y": int(y),
-                "count": len(mods),
-                "modifications": mods,
+                "count": min(len(mods), limit),
+                "total_count": len(mods),
+                "truncated": len(mods) > limit,
+                "modifications": mods[:limit],
             }
 
         self._invoke(callback)
@@ -539,8 +542,9 @@ class AnalysisService:
             if event_id is not None:
                 controller.SetFrameEvent(int(event_id), True)
             tex = self._resolve_texture(controller, event_id, resource_id, target)
+            comp = _component_type(tex)
             try:
-                mm = controller.GetMinMax(tex.resourceId, rd.Subresource(0, 0, 0), rd.CompType.Typeless)
+                mm = controller.GetMinMax(tex.resourceId, rd.Subresource(0, 0, 0), comp)
             except Exception as e:
                 result["error"] = "GetMinMax failed: %s" % str(e)
                 return
@@ -605,7 +609,7 @@ class AnalysisService:
             hotspots = []
             for px, py in points:
                 try:
-                    v = controller.PickPixel(tex.resourceId, px, py, rd.Subresource(0, 0, 0), rd.CompType.Typeless)
+                    v = controller.PickPixel(tex.resourceId, px, py, rd.Subresource(0, 0, 0), _component_type(tex))
                     rgb = [v.floatValue[0], v.floatValue[1], v.floatValue[2]]
                 except Exception:
                     continue
@@ -815,6 +819,16 @@ class AnalysisService:
         if result["error"]:
             raise ValueError(result["error"])
         return result["data"]
+
+
+def _component_type(tex):
+    """Depth targets must be queried as CompType.Depth; color uses Typeless."""
+    try:
+        if tex.format.compType == rd.CompType.Depth:
+            return rd.CompType.Depth
+    except Exception:
+        pass
+    return rd.CompType.Typeless
 
 
 def _component_kind(var_type):
