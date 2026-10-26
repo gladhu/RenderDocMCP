@@ -383,7 +383,7 @@ class PipelineService:
                 details["array_size"] = tex.arraysize
                 details["mip_levels"] = tex.mips
                 details["format"] = str(tex.format.Name())
-                details["dimension"] = str(tex.type)
+                details["dimension"] = Helpers.enum_name("TextureType", tex.type)
                 details["msaa_samples"] = tex.msSamp
                 return details
 

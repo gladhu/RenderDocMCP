@@ -15,24 +15,35 @@ class CaptureManager:
     def get_capture_status(self):
         """Check if a capture is loaded and get API info"""
         if not self.ctx.IsCaptureLoaded():
-            return {"loaded": False}
+            loading = False
+            try:
+                loading = bool(self.ctx.IsCaptureLoading())
+            except Exception:
+                pass
+            return {"loaded": False, "loading": loading}
 
-        result = {"loaded": True, "api": None, "filename": None, "vendor": None, "known_gpu_quirks": []}
+        result = {
+            "loaded": True, "api": None, "filename": None, "vendor": None,
+            "recorded_gpu": "", "known_gpu_quirks": [],
+        }
 
         try:
             result["filename"] = self.ctx.GetCaptureFilename()
         except Exception:
             pass
 
+        from ..utils import Helpers
+        recorded = Helpers.recorded_gpu(result.get("filename"))
+        result["recorded_gpu"] = recorded
+
         # Get API type via replay
         def callback(controller):
             try:
-                from ..utils import Helpers
                 props = controller.GetAPIProperties()
-                result["api"] = str(props.pipelineType)
-                result["vendor"] = str(getattr(props, "vendor", ""))
+                result["api"] = Helpers.enum_name("GraphicsAPI", props.pipelineType)
+                result["vendor"] = Helpers.enum_name("GPUVendor", props.vendor)
                 result["known_gpu_quirks"] = Helpers.gpu_quirks(
-                    result["api"], result["vendor"]
+                    result["api"], result["vendor"], recorded
                 )
             except Exception:
                 pass
@@ -123,7 +134,7 @@ class CaptureManager:
             "captures": captures,
         }
 
-    def open_capture(self, capture_path, use_remote=None):
+    def open_capture(self, capture_path, use_remote=None, wait=True):
         """
         Open a capture file in RenderDoc, with remote replay support.
 
@@ -154,13 +165,14 @@ class CaptureManager:
 
         # Determine replay mode: remote or local
         remote = self.ctx.Replay().CurrentRemote()
-        remote_connected = remote.IsConnected()
+        try:
+            remote_connected = remote.IsConnected() and not remote.IsLocalhost()
+        except Exception:
+            remote_connected = False
 
         if use_remote is True and not remote_connected:
-            raise ValueError(
-                "Remote replay requested but no remote device is connected. "
-                "Please connect to a remote device in RenderDoc first."
-            )
+            remote = self._ensure_adb_remote()
+            remote_connected = True
 
         replay_remote = False
         if use_remote is True:
@@ -210,6 +222,19 @@ class CaptureManager:
         except Exception as e:
             raise ValueError("Failed to open capture: %s" % str(e))
 
+        if not wait:
+            # LoadCapture finishes on the UI thread. Waiting here would block it.
+            return {
+                "success": True,
+                "loading": True,
+                "capture_path": capture_path,
+                "filename": os.path.basename(capture_path),
+                "replay_remote": replay_remote,
+                "remote_hostname": remote.Hostname() if replay_remote else "",
+                "remote_name": remote.Name() if replay_remote else "",
+                "remote_file_path": file_to_load if replay_remote else "",
+            }
+
         # Wait for capture to finish loading (LoadCapture is async)
         # Poll IsCaptureLoaded() with a timeout
         max_wait_seconds = 120
@@ -247,8 +272,10 @@ class CaptureManager:
 
             def callback(controller):
                 try:
+                    from ..utils import Helpers
                     props = controller.GetAPIProperties()
-                    api_result["api"] = str(props.pipelineType)
+                    api_result["api"] = Helpers.enum_name("GraphicsAPI", props.pipelineType)
+                    api_result["vendor"] = Helpers.enum_name("GPUVendor", props.vendor)
                 except Exception:
                     pass
 
@@ -259,3 +286,40 @@ class CaptureManager:
             pass
 
         return result
+
+    def _ensure_adb_remote(self):
+        """Connect the UI replay to the plugged-in Android device."""
+        import os
+
+        ctrl = rd.GetDeviceProtocolController("adb")
+        devices = [str(item) for item in ctrl.GetDevices()]
+        if not devices:
+            raise ValueError("没有通过 adb 连接的设备")
+        serial = os.environ.get("RENDERDOC_ADB_SERIAL", "").strip() or devices[0]
+        if serial not in devices:
+            raise ValueError("设备 %s 不在线，当前: %s" % (serial, ", ".join(devices)))
+        hostname = "adb://" + serial
+
+        config = self.ctx.Config()
+        host = None
+        for _ in range(8):
+            try:
+                config.UpdateEnumeratedProtocolDevices()
+            except Exception:
+                pass
+            host = config.GetRemoteHost(hostname)
+            try:
+                if host.IsValid():
+                    break
+            except Exception:
+                host = None
+            import time
+            time.sleep(0.5)
+        if host is None or not host.IsValid():
+            raise ValueError("RenderDoc 没有枚举到远程主机 %s" % hostname)
+
+        details = self.ctx.Replay().ConnectToRemoteServer(host)
+        remote = self.ctx.Replay().CurrentRemote()
+        if not remote.IsConnected() or remote.IsLocalhost():
+            raise ValueError("连接真机失败: %s" % details)
+        return remote

@@ -68,9 +68,9 @@ class RenderDocFacade:
         """List all .rdc files in the specified directory"""
         return self._capture.list_captures(directory)
 
-    def open_capture(self, capture_path, use_remote=None):
+    def open_capture(self, capture_path, use_remote=None, wait=True):
         """Open a capture file in RenderDoc, with optional remote replay support"""
-        return self._capture.open_capture(capture_path, use_remote=use_remote)
+        return self._capture.open_capture(capture_path, use_remote=use_remote, wait=wait)
 
     # ==================== Draw Call / Action Operations ====================
 

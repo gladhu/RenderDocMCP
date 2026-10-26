@@ -86,8 +86,23 @@ class PassService:
         return result["data"]
 
 
+# ActionFlags values for this RenderDoc build. getattr() on the SWIG enum crashes qrenderdoc.
+_ACTION_FLAGS = {
+    "Clear": 1,
+    "Drawcall": 2,
+    "Dispatch": 4,
+    "PushMarker": 64,
+    "PopMarker": 128,
+    "SetMarker": 32,
+    "Present": 256,
+    "PassBoundary": 8192,
+    "BeginPass": 4194304,
+    "EndPass": 8388608,
+}
+
+
 def _flag(name, default=0):
-    return int(getattr(rd.ActionFlags, name, default) or 0)
+    return _ACTION_FLAGS.get(name, default)
 
 
 def _public_pass(p):

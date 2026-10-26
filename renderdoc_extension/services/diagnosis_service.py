@@ -39,9 +39,13 @@ class DiagnosisService:
 
         def callback(controller):
             props = controller.GetAPIProperties()
-            api = str(props.pipelineType)
-            vendor = str(getattr(props, "vendor", ""))
-            family = Helpers.gpu_family(api, vendor)
+            api = Helpers.enum_name("GraphicsAPI", props.pipelineType)
+            vendor = Helpers.enum_name("GPUVendor", props.vendor)
+            try:
+                recorded = Helpers.recorded_gpu(self.ctx.GetCaptureFilename())
+            except Exception:
+                recorded = ""
+            family = Helpers.gpu_family(api, vendor, recorded)
 
             textures = list(controller.GetTextures())
             name_of = {}
@@ -110,7 +114,7 @@ class DiagnosisService:
                             "fix": "降低分辨率或使用纹理流式加载",
                         })
             if "gpu_specific" in cats:
-                for q in Helpers.gpu_quirks(api, vendor):
+                for q in Helpers.gpu_quirks(api, vendor, recorded):
                     sev = "medium" if ("mediump" in q or "discard" in q or "R11G11B10" in q) else "low"
                     risks.append({
                         "category": "gpu_specific",
@@ -129,6 +133,8 @@ class DiagnosisService:
             result["data"] = {
                 "api": api,
                 "vendor": vendor,
+                "recorded_gpu": recorded,
+                "gpu_family": family,
                 "main_resolution": "%sx%s" % (main_res[0], main_res[1]) if main_res[0] else "unknown",
                 "risk_count": len(risks),
                 "risks": risks,

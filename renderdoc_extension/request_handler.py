@@ -206,7 +206,8 @@ class RequestHandler:
         if capture_path is None:
             raise ValueError("capture_path is required")
         use_remote = params.get("use_remote")  # True/False/None
-        return self.facade.open_capture(capture_path, use_remote=use_remote)
+        wait = params.get("wait", True)
+        return self.facade.open_capture(capture_path, use_remote=use_remote, wait=wait)
 
     def _handle_get_draw_coverage(self, params):
         """Handle get_draw_coverage request"""

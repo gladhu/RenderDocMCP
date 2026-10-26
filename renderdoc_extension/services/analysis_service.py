@@ -12,7 +12,7 @@ import struct
 
 import renderdoc as rd
 
-from ..utils import Parsers
+from ..utils import Helpers, Parsers
 
 
 # Uniform blocks that are folded into #defines by default. Unity puts material
@@ -240,20 +240,20 @@ class AnalysisService:
         if var.members or var.rows > 1:
             return None
         n = max(1, var.columns)
-        vt = var.type
-        if vt in (rd.VarType.Float, getattr(rd.VarType, "Half", None)):
+        vt = Helpers.enum_name("VarType", var.type)
+        if vt in ("Float", "Half", "Double"):
             vals = ["%r" % float(v) for v in var.value.f32v[:n]]
             vals = [v if ("." in v or "e" in v or "inf" in v or "nan" in v) else v + ".0" for v in vals]
             if any("inf" in v or "nan" in v for v in vals):
                 return None
             return vals[0] if n == 1 else "vec%d(%s)" % (n, ", ".join(vals))
-        if vt in (getattr(rd.VarType, "SInt", None), getattr(rd.VarType, "Int", None)):
+        if vt == "SInt":
             vals = [str(int(v)) for v in var.value.s32v[:n]]
             return "int(%s)" % vals[0] if n == 1 else "ivec%d(%s)" % (n, ", ".join(vals))
-        if vt == rd.VarType.UInt:
+        if vt == "UInt":
             vals = ["%du" % int(v) for v in var.value.u32v[:n]]
             return vals[0] if n == 1 else "uvec%d(%s)" % (n, ", ".join(vals))
-        if vt == getattr(rd.VarType, "Bool", None):
+        if vt == "Bool":
             vals = ["true" if v else "false" for v in var.value.u32v[:n]]
             return vals[0] if n == 1 else "bvec%d(%s)" % (n, ", ".join(vals))
         return None
@@ -466,9 +466,16 @@ class AnalysisService:
             if event_id is not None:
                 controller.SetFrameEvent(int(event_id), True)
             tex = self._resolve_texture(controller, event_id, resource_id, target)
+            last_event = 0
+            for action in Helpers.flatten_actions(controller.GetRootActions()):
+                if action.eventId > last_event:
+                    last_event = action.eventId
+            if last_event:
+                controller.SetFrameEvent(last_event, True)
+            comp = _history_comp_type(tex)
             try:
                 history = controller.PixelHistory(
-                    tex.resourceId, int(x), int(y), rd.Subresource(0, 0, 0), rd.CompType.Typeless
+                    tex.resourceId, int(x), int(y), rd.Subresource(0, 0, 0), comp
                 )
             except Exception as e:
                 result["error"] = "PixelHistory failed: %s" % str(e)
@@ -500,29 +507,44 @@ class AnalysisService:
                         entry["failure_reasons"] = reasons
                 try:
                     pre, post = mod.preMod, mod.postMod
+                    pre_color = _mod_color(pre)
+                    post_color = _mod_color(post)
                     entry["pre"] = {
-                        "color": list(pre.col.floatValue),
-                        "depth": pre.depth,
-                        "stencil": pre.stencil,
+                        "color": pre_color,
+                        "depth": pre.depth if pre_color is not None else None,
+                        "stencil": pre.stencil if pre_color is not None else None,
                     }
                     entry["post"] = {
-                        "color": list(post.col.floatValue),
-                        "depth": post.depth,
-                        "stencil": post.stencil,
+                        "color": post_color,
+                        "depth": post.depth if post_color is not None else None,
+                        "stencil": post.stencil if post_color is not None else None,
                     }
-                    entry["pixel_changed"] = list(pre.col.floatValue) != list(post.col.floatValue)
+                    if pre_color is not None and post_color is not None:
+                        entry["pixel_changed"] = pre_color != post_color
+                    else:
+                        shader_out = _shader_out_color(mod)
+                        if shader_out is not None:
+                            entry["shader_out"] = shader_out
+                            entry["pixel_changed"] = True
+                        entry["color_unavailable"] = True
                 except Exception:
                     pass
                 mods.append(entry)
             limit = max(1, int(max_entries))
+            shown = mods[:limit]
+            color_source = "pixel_history"
+            if shown and not _history_has_color(shown):
+                _fill_history_colors(controller, tex, int(x), int(y), shown)
+                color_source = "pick_pixel"
             result["data"] = {
                 "resource_id": str(tex.resourceId),
                 "x": int(x),
                 "y": int(y),
-                "count": min(len(mods), limit),
+                "count": len(shown),
                 "total_count": len(mods),
                 "truncated": len(mods) > limit,
-                "modifications": mods[:limit],
+                "color_source": color_source,
+                "modifications": shown,
             }
 
         self._invoke(callback)
@@ -653,7 +675,7 @@ class AnalysisService:
         stage_map = {
             "vsin": rd.MeshDataStage.VSIn,
             "vsout": rd.MeshDataStage.VSOut,
-            "gsout": getattr(rd.MeshDataStage, "GSOut", rd.MeshDataStage.VSOut),
+            "gsout": rd.MeshDataStage.GSOut,
         }
         if stage not in stage_map:
             raise ValueError("Unknown stage: %s (vsin/vsout/gsout)" % stage)
@@ -821,6 +843,90 @@ class AnalysisService:
         return result["data"]
 
 
+def _history_has_color(entries):
+    for entry in entries:
+        post = (entry.get("post") or {}).get("color")
+        if post and any(abs(float(c)) > 1e-5 for c in post[:3]):
+            return True
+        shader_out = entry.get("shader_out")
+        if shader_out and any(abs(float(c)) > 1e-5 for c in shader_out[:3]):
+            return True
+    return False
+
+
+def _fill_history_colors(controller, tex, x, y, entries):
+    """GLES pixel history lists the events but leaves pre/post colors at 0.
+
+    PickPixel at those events is the same readback that already matches the frame.
+    """
+    try:
+        is_depth = tex.format.compType == rd.CompType.Depth
+    except Exception:
+        is_depth = False
+    comp = rd.CompType.Depth if is_depth else rd.CompType.Typeless
+    sub = rd.Subresource(0, 0, 0)
+
+    def pick(event_id):
+        controller.SetFrameEvent(int(event_id), True)
+        value = controller.PickPixel(tex.resourceId, x, y, sub, comp)
+        return [round(float(c), 6) for c in list(value.floatValue)[:4]]
+
+    prev = None
+    first_id = int(entries[0]["event_id"])
+    if first_id > 1:
+        try:
+            prev = pick(first_id - 1)
+        except Exception:
+            prev = None
+    for entry in entries:
+        try:
+            post = pick(entry["event_id"])
+        except Exception:
+            entry["color_unavailable"] = True
+            continue
+        entry.setdefault("pre", {})
+        entry.setdefault("post", {})
+        entry["pre"]["color"] = prev
+        entry["post"]["color"] = post
+        entry["pixel_changed"] = prev is not None and prev != post
+        entry.pop("color_unavailable", None)
+        entry["color_source"] = "pick_pixel"
+        prev = post
+
+
+def _history_comp_type(tex):
+    """PixelHistory leaves color at 0 when asked to cast a typed target as Typeless."""
+    try:
+        comp = tex.format.compType
+        if comp == rd.CompType.Typeless:
+            return rd.CompType.UNorm
+        return comp
+    except Exception:
+        return rd.CompType.UNorm
+
+
+def _mod_color(value):
+    try:
+        if hasattr(value, "IsValid") and not value.IsValid():
+            return None
+    except Exception:
+        return None
+    try:
+        return [round(float(c), 6) for c in value.col.floatValue]
+    except Exception:
+        return None
+
+
+def _shader_out_color(mod):
+    try:
+        vals = list(mod.shaderOut.value.f32v)
+    except Exception:
+        return None
+    if not vals or all(v == 0 for v in vals):
+        return None
+    return [round(float(c), 6) for c in vals[:4]]
+
+
 def _component_type(tex):
     """Depth targets must be queried as CompType.Depth; color uses Typeless."""
     try:
@@ -832,12 +938,12 @@ def _component_type(tex):
 
 
 def _component_kind(var_type):
-    name = str(var_type).upper()
-    if "DOUBLE" in name:
+    name = Helpers.enum_name("VarType", var_type).upper()
+    if name == "DOUBLE":
         return "double"
-    if "HALF" in name or "FLOAT16" in name:
+    if name == "HALF" or "FLOAT16" in name:
         return "half"
-    if "FLOAT" in name:
+    if name == "FLOAT":
         return "float"
     return "other"
 
@@ -856,7 +962,7 @@ def _sig_layout(sigs):
         layout.append({
             "name": name,
             "semantic": str(getattr(sig, "semanticName", "") or name).upper(),
-            "var_type": str(sig.varType),
+            "var_type": Helpers.enum_name("VarType", sig.varType),
             "comp_count": comps,
             "byte_offset": offset,
             "kind": kind,
@@ -954,11 +1060,11 @@ def _split_restart(indices):
 
 
 def _topology_name(postvs, pipe):
-    topo = str(getattr(postvs, "topology", "") or "")
-    if topo and topo != "None":
-        return topo
+    topo = getattr(postvs, "topology", None)
+    if topo is not None and str(topo) not in ("", "None"):
+        return Helpers.enum_name("Topology", topo)
     try:
-        return str(pipe.GetPrimitiveTopology())
+        return Helpers.enum_name("Topology", pipe.GetPrimitiveTopology())
     except Exception:
         return "TriangleList"
 

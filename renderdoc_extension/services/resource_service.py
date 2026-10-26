@@ -93,7 +93,7 @@ class ResourceService:
                     "array_size": tex_desc.arraysize,
                     "mip_levels": tex_desc.mips,
                     "format": str(tex_desc.format.Name()),
-                    "dimension": str(tex_desc.type),
+                    "dimension": Helpers.enum_name("TextureType", tex_desc.type),
                     "msaa_samples": tex_desc.msSamp,
                     "byte_size": tex_desc.byteSize,
                 }
@@ -200,7 +200,7 @@ class ResourceService:
                 "sample": sample,
                 "depth_slice": depth_slice,
                 "format": str(tex_desc.format.Name()),
-                "dimension": str(tex_desc.type),
+                "dimension": Helpers.enum_name("TextureType", tex_desc.type),
                 "is_3d": is_3d,
                 "total_depth": mip_depth if is_3d else 1,
                 "data_length": len(data),
@@ -251,7 +251,7 @@ class ResourceService:
                     "array_size": tex.arraysize,
                     "mips": tex.mips,
                     "format": fmt,
-                    "dimension": str(tex.type),
+                    "dimension": Helpers.enum_name("TextureType", tex.type),
                     "size_bytes": size,
                     "size_mb": round(size / (1024.0 * 1024.0), 3),
                     "is_render_target": is_rt,
@@ -296,7 +296,7 @@ class ResourceService:
                 for u in controller.GetUsage(tex.resourceId):
                     usages.append({
                         "event_id": int(u.eventId),
-                        "usage": str(u.usage),
+                        "usage": Helpers.enum_name("ResourceUsage", u.usage),
                     })
             except Exception:
                 pass
@@ -318,31 +318,18 @@ class ResourceService:
         result = {"data": None, "error": None}
 
         def callback(controller):
-            try:
-                rid = Parsers.parse_resource_id(resource_id)
-            except Exception:
-                result["error"] = "Invalid resource ID: %s" % resource_id
-                return
-            found = False
-            for tex in controller.GetTextures():
-                if tex.resourceId == rid:
-                    found = True
-                    break
-            if not found:
-                for buf in controller.GetBuffers():
-                    if buf.resourceId == rid:
-                        found = True
-                        break
-            if not found:
+            rid = _live_resource_id(controller, resource_id)
+            if rid is None:
                 result["error"] = "Resource not found: %s" % resource_id
                 return
             usages = []
             try:
                 for u in controller.GetUsage(rid):
+                    name = Helpers.enum_name("ResourceUsage", u.usage)
                     usages.append({
                         "event_id": int(u.eventId),
-                        "usage": str(u.usage),
-                        "kind": _classify_usage(str(u.usage)),
+                        "usage": name,
+                        "kind": _classify_usage(name),
                     })
             except Exception as e:
                 result["error"] = "GetUsage failed: %s" % str(e)
@@ -360,11 +347,24 @@ class ResourceService:
         return result["data"]
 
 
+def _live_resource_id(controller, resource_id):
+    """Find the replay's ResourceId. Reconstructed ids do not compare equal."""
+    try:
+        target = Parsers.extract_numeric_id(resource_id)
+    except Exception:
+        return None
+    for collection in (controller.GetTextures(), controller.GetBuffers(), controller.GetResources()):
+        for item in collection:
+            if Parsers.extract_numeric_id(str(item.resourceId)) == target:
+                return item.resourceId
+    return None
+
+
 def _usage_counts(controller, rid):
     counts = {"read": 0, "write": 0, "clear": 0, "eids": []}
     try:
         for u in controller.GetUsage(rid):
-            kind = _classify_usage(str(u.usage))
+            kind = _classify_usage(Helpers.enum_name("ResourceUsage", u.usage))
             if kind in counts:
                 counts[kind] += 1
             counts["eids"].append(int(u.eventId))

@@ -3,6 +3,9 @@ RenderDoc MCP Bridge Extension
 Provides socket server for external MCP server communication.
 """
 
+import os
+import tempfile
+
 from . import socket_server
 from . import request_handler
 from . import renderdoc_facade
@@ -32,6 +35,12 @@ def register(version, ctx):
     global _context, _server, _version
     _version = version
     _context = ctx
+    try:
+        import faulthandler
+        _fault = open(os.path.join(tempfile.gettempdir(), "rdmcp_fault.log"), "w")
+        faulthandler.enable(_fault, all_threads=True)
+    except Exception:
+        pass
 
     # Create facade and handler
     facade = renderdoc_facade.RenderDocFacade(ctx)
