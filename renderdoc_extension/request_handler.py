@@ -34,6 +34,7 @@ class RequestHandler:
             "get_shader_sources": self._handle_get_shader_sources,
             "save_texture": self._handle_save_texture,
             "pick_pixel": self._handle_pick_pixel,
+            "diagnose_mobile_risks": self._handle_diagnose_mobile_risks,
         }
 
     def handle(self, request):
@@ -249,4 +250,11 @@ class RequestHandler:
             event_id=params.get("event_id"),
             resource_id=params.get("resource_id"),
             target=params.get("target", "color0"),
+        )
+
+    def _handle_diagnose_mobile_risks(self, params):
+        """Handle diagnose_mobile_risks request"""
+        return self.facade.diagnose_mobile_risks(
+            check_categories=params.get("check_categories"),
+            severity_filter=params.get("severity_filter", "all"),
         )

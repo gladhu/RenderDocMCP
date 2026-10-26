@@ -11,6 +11,7 @@ from .services import (
     ResourceService,
     PipelineService,
     AnalysisService,
+    DiagnosisService,
 )
 
 
@@ -25,6 +26,7 @@ class RenderDocFacade:
     - ResourceService: Texture and buffer data
     - PipelineService: Pipeline state and shader info
     - AnalysisService: Coverage, shader sources, texture export
+    - DiagnosisService: Mobile / TBR heuristic risks
     """
 
     def __init__(self, ctx):
@@ -43,6 +45,7 @@ class RenderDocFacade:
         self._resource = ResourceService(ctx, self._invoke)
         self._pipeline = PipelineService(ctx, self._invoke)
         self._analysis = AnalysisService(ctx, self._invoke)
+        self._diagnosis = DiagnosisService(ctx, self._invoke)
 
     def _invoke(self, callback):
         """Invoke callback on replay thread via BlockInvoke"""
@@ -166,3 +169,7 @@ class RenderDocFacade:
     def pick_pixel(self, x, y, event_id=None, resource_id=None, target="color0"):
         """Read a single pixel"""
         return self._analysis.pick_pixel(x, y, event_id, resource_id, target)
+
+    def diagnose_mobile_risks(self, check_categories=None, severity_filter="all"):
+        """Heuristic mobile / TBR risk scan"""
+        return self._diagnosis.diagnose_mobile_risks(check_categories, severity_filter)

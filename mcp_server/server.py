@@ -653,6 +653,24 @@ def pick_pixel(
     return bridge.call("pick_pixel", params)
 
 
+@mcp.tool
+def diagnose_mobile_risks(
+    check_categories: list[str] | None = None,
+    severity_filter: Literal["all", "medium", "high"] = "all",
+) -> dict:
+    """
+    Heuristic scan for mobile / tile-based GPU risks.
+
+    Categories: precision (R11G11B10, D16), performance (too many fullscreen
+    clears, discard), compatibility (textures > 4096), gpu_specific (Adreno /
+    Mali / PowerVR quirks). Returns a priority-sorted list with a suggested fix.
+    """
+    params: dict[str, object] = {"severity_filter": severity_filter}
+    if check_categories is not None:
+        params["check_categories"] = check_categories
+    return bridge.call("diagnose_mobile_risks", params, timeout=_LONG_TIMEOUT)
+
+
 # ==================== Analysis prompts ====================
 
 

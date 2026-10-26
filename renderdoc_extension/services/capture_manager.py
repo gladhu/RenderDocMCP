@@ -17,7 +17,7 @@ class CaptureManager:
         if not self.ctx.IsCaptureLoaded():
             return {"loaded": False}
 
-        result = {"loaded": True, "api": None, "filename": None}
+        result = {"loaded": True, "api": None, "filename": None, "vendor": None, "known_gpu_quirks": []}
 
         try:
             result["filename"] = self.ctx.GetCaptureFilename()
@@ -27,8 +27,13 @@ class CaptureManager:
         # Get API type via replay
         def callback(controller):
             try:
+                from ..utils import Helpers
                 props = controller.GetAPIProperties()
                 result["api"] = str(props.pipelineType)
+                result["vendor"] = str(getattr(props, "vendor", ""))
+                result["known_gpu_quirks"] = Helpers.gpu_quirks(
+                    result["api"], result["vendor"]
+                )
             except Exception:
                 pass
 
