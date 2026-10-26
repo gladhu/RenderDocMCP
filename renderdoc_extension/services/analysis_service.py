@@ -6,6 +6,8 @@ opened with remote replay (e.g. an Android device) the overlays, histograms
 and pixel reads are executed by the device GPU, not the local PC.
 """
 
+import math
+
 import renderdoc as rd
 
 from ..utils import Parsers
@@ -398,6 +400,194 @@ class AnalysisService:
                 "y": int(y),
                 "float": list(v.floatValue),
                 "uint": list(v.uintValue),
+            }
+
+        self._invoke(callback)
+        return result["data"]
+
+    def pixel_history(self, x, y, event_id=None, resource_id=None, target="color0"):
+        """Which draws modified this pixel, with pass/fail reasons"""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        if event_id is None and resource_id is None:
+            raise ValueError("event_id or resource_id is required")
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            if event_id is not None:
+                controller.SetFrameEvent(int(event_id), True)
+            tex = self._resolve_texture(controller, event_id, resource_id, target)
+            try:
+                history = controller.PixelHistory(
+                    tex.resourceId, int(x), int(y), rd.Subresource(0, 0, 0), rd.CompType.Typeless
+                )
+            except Exception as e:
+                result["error"] = "PixelHistory failed: %s" % str(e)
+                return
+            mods = []
+            for mod in history:
+                passed = True
+                try:
+                    passed = bool(mod.Passed())
+                except Exception:
+                    passed = True
+                entry = {"event_id": int(mod.eventId), "passed": passed}
+                if not passed:
+                    reasons = []
+                    for attr, label in (
+                        ("backfaceCulled", "backface_culled"),
+                        ("depthTestFailed", "depth_test_failed"),
+                        ("stencilTestFailed", "stencil_test_failed"),
+                        ("scissorClipped", "scissor_clipped"),
+                        ("shaderDiscarded", "shader_discarded"),
+                        ("depthClipped", "depth_clipped"),
+                    ):
+                        try:
+                            if getattr(mod, attr, False):
+                                reasons.append(label)
+                        except Exception:
+                            pass
+                    if reasons:
+                        entry["failure_reasons"] = reasons
+                try:
+                    pre, post = mod.preMod, mod.postMod
+                    entry["pre"] = {
+                        "color": list(pre.col.floatValue),
+                        "depth": pre.depth,
+                        "stencil": pre.stencil,
+                    }
+                    entry["post"] = {
+                        "color": list(post.col.floatValue),
+                        "depth": post.depth,
+                        "stencil": post.stencil,
+                    }
+                    entry["pixel_changed"] = list(pre.col.floatValue) != list(post.col.floatValue)
+                except Exception:
+                    pass
+                mods.append(entry)
+            result["data"] = {
+                "resource_id": str(tex.resourceId),
+                "x": int(x),
+                "y": int(y),
+                "count": len(mods),
+                "modifications": mods,
+            }
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    def read_texture_stats(self, event_id=None, resource_id=None, target="color0"):
+        """GPU min/max of a texture, with NaN / Inf / negative flags"""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        if event_id is None and resource_id is None:
+            raise ValueError("event_id or resource_id is required")
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            if event_id is not None:
+                controller.SetFrameEvent(int(event_id), True)
+            tex = self._resolve_texture(controller, event_id, resource_id, target)
+            try:
+                mm = controller.GetMinMax(tex.resourceId, rd.Subresource(0, 0, 0), rd.CompType.Typeless)
+            except Exception as e:
+                result["error"] = "GetMinMax failed: %s" % str(e)
+                return
+            mn, mx = mm[0], mm[1]
+            mins = list(mn.floatValue)
+            maxs = list(mx.floatValue)
+            flags = {
+                "has_negative": any(v < 0 for v in mins[:3]),
+                "has_inf": any(math.isinf(v) for v in mins + maxs),
+                "has_nan": any(math.isnan(v) for v in mins + maxs),
+                "all_zero": all(abs(v) < 1e-8 for v in maxs),
+            }
+            result["data"] = {
+                "resource_id": str(tex.resourceId),
+                "name": self.ctx.GetResourceName(tex.resourceId),
+                "format": str(tex.format.Name()),
+                "width": tex.width,
+                "height": tex.height,
+                "min": mins,
+                "max": maxs,
+                "flags": flags,
+            }
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    def sample_pixel_region(
+        self, event_id=None, resource_id=None, target="color0",
+        x=0, y=0, width=None, height=None, sample_count=256, anomaly_threshold=10.0,
+    ):
+        """Grid-sample a region for NaN / Inf / negative / extreme-bright pixels"""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        if event_id is None and resource_id is None:
+            raise ValueError("event_id or resource_id is required")
+        result = {"data": None}
+
+        def callback(controller):
+            if event_id is not None:
+                controller.SetFrameEvent(int(event_id), True)
+            tex = self._resolve_texture(controller, event_id, resource_id, target)
+            tw, th = int(tex.width), int(tex.height)
+            rx, ry = max(0, int(x)), max(0, int(y))
+            rw = min(int(width) if width else tw, tw - rx)
+            rh = min(int(height) if height else th, th - ry)
+            count = min(max(int(sample_count), 1), 1024)
+            cols = max(1, int(math.sqrt(count * rw / float(max(rh, 1)))))
+            rows = max(1, count // cols)
+            step_x = max(1, rw // cols)
+            step_y = max(1, rh // rows)
+            points = []
+            for r in range(rows):
+                for c in range(cols):
+                    px = rx + c * step_x + step_x // 2
+                    py = ry + r * step_y + step_y // 2
+                    if px < rx + rw and py < ry + rh:
+                        points.append((px, py))
+
+            nan_c = inf_c = neg_c = bright_c = 0
+            hotspots = []
+            for px, py in points:
+                try:
+                    v = controller.PickPixel(tex.resourceId, px, py, rd.Subresource(0, 0, 0), rd.CompType.Typeless)
+                    rgb = [v.floatValue[0], v.floatValue[1], v.floatValue[2]]
+                except Exception:
+                    continue
+                kind = None
+                if any(math.isnan(n) for n in rgb):
+                    nan_c += 1
+                    kind = "NaN"
+                elif any(math.isinf(n) for n in rgb):
+                    inf_c += 1
+                    kind = "Inf"
+                elif any(n < 0 for n in rgb):
+                    neg_c += 1
+                    kind = "negative"
+                elif max(rgb) > float(anomaly_threshold):
+                    bright_c += 1
+                    kind = "extreme_bright"
+                if kind and len(hotspots) < 20:
+                    hotspots.append({"x": px, "y": py, "value": [round(n, 6) for n in rgb], "type": kind})
+
+            total = len(points)
+            anomalies = nan_c + inf_c + neg_c + bright_c
+            result["data"] = {
+                "resource_id": str(tex.resourceId),
+                "region": {"x": rx, "y": ry, "width": rw, "height": rh},
+                "sample_count": total,
+                "anomalies": {
+                    "nan": nan_c, "inf": inf_c, "negative": neg_c,
+                    "extreme_bright": bright_c, "total": anomalies,
+                    "rate": round(anomalies / float(max(total, 1)), 4),
+                },
+                "hotspots": hotspots,
             }
 
         self._invoke(callback)

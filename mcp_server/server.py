@@ -719,6 +719,74 @@ def get_texture_detail(resource_id: str) -> dict:
     return bridge.call("get_texture_detail", {"resource_id": resource_id}, timeout=_LONG_TIMEOUT)
 
 
+@mcp.tool
+def pixel_history(
+    x: int,
+    y: int,
+    event_id: int | None = None,
+    resource_id: str | None = None,
+    target: str = "color0",
+) -> dict:
+    """
+    Modification history of one pixel: which draws wrote it, pre/post color,
+    and why a fragment failed (depth, stencil, discard, scissor, backface).
+    Needs a render target via event_id+target or resource_id.
+    """
+    params: dict[str, object] = {"x": x, "y": y, "target": target}
+    if event_id is not None:
+        params["event_id"] = event_id
+    if resource_id is not None:
+        params["resource_id"] = resource_id
+    return bridge.call("pixel_history", params, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
+def read_texture_stats(
+    event_id: int | None = None,
+    resource_id: str | None = None,
+    target: str = "color0",
+) -> dict:
+    """
+    GPU min/max of a texture (GetMinMax). Flags has_negative / has_inf / has_nan / all_zero.
+    """
+    params: dict[str, object] = {"target": target}
+    if event_id is not None:
+        params["event_id"] = event_id
+    if resource_id is not None:
+        params["resource_id"] = resource_id
+    return bridge.call("read_texture_stats", params, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
+def sample_pixel_region(
+    event_id: int | None = None,
+    resource_id: str | None = None,
+    target: str = "color0",
+    x: int = 0,
+    y: int = 0,
+    width: int | None = None,
+    height: int | None = None,
+    sample_count: int = 256,
+    anomaly_threshold: float = 10.0,
+) -> dict:
+    """
+    Grid-sample a region and report NaN / Inf / negative / extreme-bright hotspots.
+    """
+    params: dict[str, object] = {
+        "target": target, "x": x, "y": y,
+        "sample_count": sample_count, "anomaly_threshold": anomaly_threshold,
+    }
+    if event_id is not None:
+        params["event_id"] = event_id
+    if resource_id is not None:
+        params["resource_id"] = resource_id
+    if width is not None:
+        params["width"] = width
+    if height is not None:
+        params["height"] = height
+    return bridge.call("sample_pixel_region", params, timeout=_LONG_TIMEOUT)
+
+
 # ==================== Analysis prompts ====================
 
 

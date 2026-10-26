@@ -181,6 +181,21 @@ class RenderDocFacade:
         """Read a single pixel"""
         return self._analysis.pick_pixel(x, y, event_id, resource_id, target)
 
+    def pixel_history(self, x, y, event_id=None, resource_id=None, target="color0"):
+        """Pixel modification history"""
+        return self._analysis.pixel_history(x, y, event_id, resource_id, target)
+
+    def read_texture_stats(self, event_id=None, resource_id=None, target="color0"):
+        """GPU min/max with NaN/Inf/negative flags"""
+        return self._analysis.read_texture_stats(event_id, resource_id, target)
+
+    def sample_pixel_region(self, event_id=None, resource_id=None, target="color0",
+                            x=0, y=0, width=None, height=None, sample_count=256, anomaly_threshold=10.0):
+        """Grid-sample a region for anomalies"""
+        return self._analysis.sample_pixel_region(
+            event_id, resource_id, target, x, y, width, height, sample_count, anomaly_threshold
+        )
+
     def diagnose_mobile_risks(self, check_categories=None, severity_filter="all"):
         """Heuristic mobile / TBR risk scan"""
         return self._diagnosis.diagnose_mobile_risks(check_categories, severity_filter)

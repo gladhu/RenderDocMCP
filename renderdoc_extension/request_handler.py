@@ -39,6 +39,9 @@ class RequestHandler:
             "get_pass_detail": self._handle_get_pass_detail,
             "list_frame_textures": self._handle_list_frame_textures,
             "get_texture_detail": self._handle_get_texture_detail,
+            "pixel_history": self._handle_pixel_history,
+            "read_texture_stats": self._handle_read_texture_stats,
+            "sample_pixel_region": self._handle_sample_pixel_region,
         }
 
     def handle(self, request):
@@ -290,3 +293,37 @@ class RequestHandler:
         if resource_id is None:
             raise ValueError("resource_id is required")
         return self.facade.get_texture_detail(resource_id)
+
+    def _handle_pixel_history(self, params):
+        """Handle pixel_history request"""
+        x, y = params.get("x"), params.get("y")
+        if x is None or y is None:
+            raise ValueError("x and y are required")
+        return self.facade.pixel_history(
+            x, y,
+            event_id=params.get("event_id"),
+            resource_id=params.get("resource_id"),
+            target=params.get("target", "color0"),
+        )
+
+    def _handle_read_texture_stats(self, params):
+        """Handle read_texture_stats request"""
+        return self.facade.read_texture_stats(
+            event_id=params.get("event_id"),
+            resource_id=params.get("resource_id"),
+            target=params.get("target", "color0"),
+        )
+
+    def _handle_sample_pixel_region(self, params):
+        """Handle sample_pixel_region request"""
+        return self.facade.sample_pixel_region(
+            event_id=params.get("event_id"),
+            resource_id=params.get("resource_id"),
+            target=params.get("target", "color0"),
+            x=params.get("x", 0),
+            y=params.get("y", 0),
+            width=params.get("width"),
+            height=params.get("height"),
+            sample_count=params.get("sample_count", 256),
+            anomaly_threshold=params.get("anomaly_threshold", 10.0),
+        )
