@@ -140,6 +140,126 @@ class DiagnosisService:
         self._invoke(callback)
         return result["data"]
 
+    def analyze_state_changes(self, marker_filter=None, change_types=None, max_draws=200):
+        """Count PSO / RT / shader changes between consecutive draws; find batchable runs"""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        valid = set(["shader", "blend", "depth", "cull", "render_target"])
+        if change_types:
+            track = set(change_types)
+            unknown = track - valid
+            if unknown:
+                raise ValueError("Unknown change_types: %s" % sorted(unknown))
+        else:
+            track = valid
+        result = {"data": None}
+
+        def callback(controller):
+            sf = controller.GetStructuredFile()
+            draws = []
+
+            def walk(actions, path):
+                for action in actions:
+                    name = action.GetName(sf)
+                    child_path = path + [name] if action.children else path
+                    if action.children:
+                        walk(action.children, child_path)
+                    if not (action.flags & rd.ActionFlags.Drawcall):
+                        continue
+                    if marker_filter and not any(marker_filter in p for p in child_path + [name]):
+                        continue
+                    draws.append(action)
+
+            walk(controller.GetRootActions(), [])
+            change_counts = dict((t, 0) for t in track)
+            prev = {}
+            runs = []
+            current = None
+            analyzed = 0
+            for action in draws[: max(1, int(max_draws))]:
+                analyzed += 1
+                try:
+                    controller.SetFrameEvent(action.eventId, False)
+                    pipe = controller.GetPipelineState()
+                except Exception:
+                    continue
+                cur = {}
+                if "shader" in track:
+                    try:
+                        cur["shader"] = str(pipe.GetShader(rd.ShaderStage.Pixel))
+                    except Exception:
+                        cur["shader"] = None
+                if "blend" in track:
+                    try:
+                        cb = pipe.GetColorBlend()
+                        b = cb.blends[0] if getattr(cb, "blends", None) else None
+                        cur["blend"] = (
+                            bool(b.enabled),
+                            str(b.colorBlend.source),
+                            str(b.colorBlend.destination),
+                        ) if b else None
+                    except Exception:
+                        cur["blend"] = None
+                if "depth" in track:
+                    try:
+                        ds = pipe.GetDepthState()
+                        cur["depth"] = (bool(ds.depthEnable), str(ds.depthFunction))
+                    except Exception:
+                        cur["depth"] = None
+                if "cull" in track:
+                    try:
+                        rast = pipe.GetRasterizerState() if hasattr(pipe, "GetRasterizerState") else pipe.GetRasterizer()
+                        cur["cull"] = str(getattr(rast, "cullMode", None))
+                    except Exception:
+                        cur["cull"] = None
+                if "render_target" in track:
+                    cur["render_target"] = Helpers.action_rt_key(action)
+
+                changed = []
+                if prev:
+                    for field in track:
+                        if cur.get(field) != prev.get(field):
+                            change_counts[field] += 1
+                            changed.append(field)
+                if not changed:
+                    if current is None:
+                        current = {"start_event": action.eventId, "end_event": action.eventId, "count": 1}
+                    else:
+                        current["end_event"] = action.eventId
+                        current["count"] += 1
+                else:
+                    if current and current["count"] >= 2:
+                        runs.append(current)
+                    current = {"start_event": action.eventId, "end_event": action.eventId, "count": 1}
+                prev = cur
+            if current and current["count"] >= 2:
+                runs.append(current)
+            runs.sort(key=lambda r: -r["count"])
+
+            suggestions = []
+            if change_counts.get("shader", 0) > analyzed // 3:
+                suggestions.append("Shader 切换 %d 次，考虑按 shader 排序合批" % change_counts["shader"])
+            if change_counts.get("render_target", 0) > 5:
+                suggestions.append(
+                    "RT 切换 %d 次，分块 GPU 上每次都可能触发 tile store/load" % change_counts["render_target"]
+                )
+            if runs:
+                best = runs[0]
+                suggestions.append(
+                    "事件 %s–%s 连续 %d 个 DC 状态相同，可考虑 instancing 合并"
+                    % (best["start_event"], best["end_event"], best["count"])
+                )
+            result["data"] = {
+                "analyzed_draws": analyzed,
+                "total_draws": len(draws),
+                "change_counts": change_counts,
+                "batching_opportunities": runs[:5],
+                "suggestions": suggestions,
+            }
+
+        self._invoke(callback)
+        return result["data"]
+
 
 def _tex_by_id(textures, rid):
     for tex in textures:

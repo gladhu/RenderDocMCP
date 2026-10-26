@@ -208,6 +208,10 @@ class RenderDocFacade:
         """Heuristic mobile / TBR risk scan"""
         return self._diagnosis.diagnose_mobile_risks(check_categories, severity_filter)
 
+    def analyze_state_changes(self, marker_filter=None, change_types=None, max_draws=200):
+        """PSO / RT / shader change scan"""
+        return self._diagnosis.analyze_state_changes(marker_filter, change_types, max_draws)
+
     def get_renderpass_list(self, sort_by="index"):
         """Enumerate render passes"""
         return self._pass.get_renderpass_list(sort_by)

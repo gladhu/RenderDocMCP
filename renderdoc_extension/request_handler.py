@@ -44,6 +44,7 @@ class RequestHandler:
             "sample_pixel_region": self._handle_sample_pixel_region,
             "get_resource_usage": self._handle_get_resource_usage,
             "list_shaders": self._handle_list_shaders,
+            "analyze_state_changes": self._handle_analyze_state_changes,
         }
 
     def handle(self, request):
@@ -342,4 +343,12 @@ class RequestHandler:
         return self.facade.list_shaders(
             stage=params.get("stage"),
             top_n=params.get("top_n", 50),
+        )
+
+    def _handle_analyze_state_changes(self, params):
+        """Handle analyze_state_changes request"""
+        return self.facade.analyze_state_changes(
+            marker_filter=params.get("marker_filter"),
+            change_types=params.get("change_types"),
+            max_draws=params.get("max_draws", 200),
         )

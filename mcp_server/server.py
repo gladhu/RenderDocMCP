@@ -808,6 +808,24 @@ def list_shaders(
     return bridge.call("list_shaders", params, timeout=_LONG_TIMEOUT)
 
 
+@mcp.tool
+def analyze_state_changes(
+    marker_filter: str | None = None,
+    change_types: list[str] | None = None,
+    max_draws: int = 200,
+) -> dict:
+    """
+    Count shader / blend / depth / cull / render_target changes between
+    consecutive draws. Reports identical-state runs that could be instanced.
+    """
+    params: dict[str, object] = {"max_draws": max_draws}
+    if marker_filter is not None:
+        params["marker_filter"] = marker_filter
+    if change_types is not None:
+        params["change_types"] = change_types
+    return bridge.call("analyze_state_changes", params, timeout=_LONG_TIMEOUT)
+
+
 # ==================== Analysis prompts ====================
 
 

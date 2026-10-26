@@ -155,6 +155,7 @@ uv tool update-shell  # 添加到 PATH
 | `pixel_history` | 某个像素被哪些 DC 修改，以及 depth/stencil/discard 失败原因 |
 | `read_texture_stats` | GPU min/max，标记 NaN / Inf / 负值 / 全 0 |
 | `sample_pixel_region` | 网格采样一块区域，报告异常热点 |
+| `analyze_state_changes` | 统计连续 DC 的 shader/blend/depth/cull/RT 切换，找出可合批区间 |
 
 > malioc 需要安装 Arm Performance Studio（`malioc` 在 PATH 里），或者设置环境变量 `MALIOC_PATH`。`gpu` 参数要填真机的 GPU 型号，例如 `Mali-G610`。
 >
@@ -293,6 +294,7 @@ diagnose_mobile_risks(check_categories=["precision"], severity_filter="high")
 pixel_history(x=640, y=360, event_id=9000, target="color0")
 read_texture_stats(event_id=9000, target="color0")
 sample_pixel_region(event_id=9000, sample_count=256)
+analyze_state_changes(marker_filter="DrawOpaqueObjects")
 ```
 
 ## 系统要求
