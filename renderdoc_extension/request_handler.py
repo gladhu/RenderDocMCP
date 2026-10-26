@@ -35,6 +35,8 @@ class RequestHandler:
             "save_texture": self._handle_save_texture,
             "pick_pixel": self._handle_pick_pixel,
             "diagnose_mobile_risks": self._handle_diagnose_mobile_risks,
+            "get_renderpass_list": self._handle_get_renderpass_list,
+            "get_pass_detail": self._handle_get_pass_detail,
         }
 
     def handle(self, request):
@@ -258,3 +260,14 @@ class RequestHandler:
             check_categories=params.get("check_categories"),
             severity_filter=params.get("severity_filter", "all"),
         )
+
+    def _handle_get_renderpass_list(self, params):
+        """Handle get_renderpass_list request"""
+        return self.facade.get_renderpass_list(sort_by=params.get("sort_by", "index"))
+
+    def _handle_get_pass_detail(self, params):
+        """Handle get_pass_detail request"""
+        pass_index = params.get("pass_index")
+        if pass_index is None:
+            raise ValueError("pass_index is required")
+        return self.facade.get_pass_detail(int(pass_index))

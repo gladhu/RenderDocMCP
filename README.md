@@ -111,6 +111,8 @@ uv tool update-shell  # 添加到 PATH
 |------|------|
 | `get_draw_calls` | 层级列出绘制调用，可按 marker、event 范围、flags 过滤 |
 | `get_frame_summary` | 帧统计：API、DC/Dispatch/Clear/Copy/Present/marker 数量、顶层 marker、资源数 |
+| `get_renderpass_list` | 划分 RenderPass（PassBoundary → marker → RT 切换），含 DC 数和 color/depth 附件 |
+| `get_pass_detail` | 指定 Pass 内的 DC 列表和附件 |
 | `get_draw_call_details` | 单个 DC 的顶点数、输出等详情 |
 | `find_draws_by_shader` | 按 shader 名（部分匹配）反查 DC，可限定 stage |
 | `find_draws_by_texture` | 按贴图名（部分匹配）反查 DC，搜索 SRV / UAV / RT |
@@ -204,6 +206,8 @@ get_draw_calls(
 )
 
 get_frame_summary()
+get_renderpass_list(sort_by="draw_count")
+get_pass_detail(pass_index=0)
 get_draw_call_details(event_id=123)
 ```
 

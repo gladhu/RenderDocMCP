@@ -671,6 +671,28 @@ def diagnose_mobile_risks(
     return bridge.call("diagnose_mobile_risks", params, timeout=_LONG_TIMEOUT)
 
 
+@mcp.tool
+def get_renderpass_list(
+    sort_by: Literal["index", "draw_count", "event_id"] = "index",
+) -> dict:
+    """
+    Enumerate render passes in the current capture.
+
+    Resolution order: PassBoundary+BeginPass flags, then marker groups that
+    contain draws, then a synthetic split on color/depth target changes.
+    Each pass includes event range, draw count, and color/depth attachments.
+    """
+    return bridge.call("get_renderpass_list", {"sort_by": sort_by}, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
+def get_pass_detail(pass_index: int) -> dict:
+    """
+    List draw calls and attachments of one pass from get_renderpass_list.
+    """
+    return bridge.call("get_pass_detail", {"pass_index": pass_index}, timeout=_LONG_TIMEOUT)
+
+
 # ==================== Analysis prompts ====================
 
 

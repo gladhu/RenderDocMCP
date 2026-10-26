@@ -9,6 +9,7 @@ from .resource_service import ResourceService
 from .pipeline_service import PipelineService
 from .analysis_service import AnalysisService
 from .diagnosis_service import DiagnosisService
+from .pass_service import PassService
 
 __all__ = [
     "CaptureManager",
@@ -18,4 +19,5 @@ __all__ = [
     "PipelineService",
     "AnalysisService",
     "DiagnosisService",
+    "PassService",
 ]

@@ -12,6 +12,7 @@ from .services import (
     PipelineService,
     AnalysisService,
     DiagnosisService,
+    PassService,
 )
 
 
@@ -27,6 +28,7 @@ class RenderDocFacade:
     - PipelineService: Pipeline state and shader info
     - AnalysisService: Coverage, shader sources, texture export
     - DiagnosisService: Mobile / TBR heuristic risks
+    - PassService: Render-pass enumeration and detail
     """
 
     def __init__(self, ctx):
@@ -46,6 +48,7 @@ class RenderDocFacade:
         self._pipeline = PipelineService(ctx, self._invoke)
         self._analysis = AnalysisService(ctx, self._invoke)
         self._diagnosis = DiagnosisService(ctx, self._invoke)
+        self._pass = PassService(ctx, self._invoke)
 
     def _invoke(self, callback):
         """Invoke callback on replay thread via BlockInvoke"""
@@ -173,3 +176,11 @@ class RenderDocFacade:
     def diagnose_mobile_risks(self, check_categories=None, severity_filter="all"):
         """Heuristic mobile / TBR risk scan"""
         return self._diagnosis.diagnose_mobile_risks(check_categories, severity_filter)
+
+    def get_renderpass_list(self, sort_by="index"):
+        """Enumerate render passes"""
+        return self._pass.get_renderpass_list(sort_by)
+
+    def get_pass_detail(self, pass_index):
+        """Draws and attachments of one pass"""
+        return self._pass.get_pass_detail(pass_index)
