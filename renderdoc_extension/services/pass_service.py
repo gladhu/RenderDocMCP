@@ -3,7 +3,9 @@ Render-pass enumeration using official RenderDoc APIs.
 
 Resolution order:
   1. ActionFlags.PassBoundary + BeginPass (Vulkan / D3D12)
-  2. Marker groups that contain draws
+  2. Marker groups. A marker is its own pass only for draws that are its
+     direct children; nested markers are separate passes. Draws outside any
+     marker are reported as one unmarked group.
   3. Synthetic split on color/depth target changes (plus Clear)
 """
 
@@ -33,7 +35,7 @@ class PassService:
             result["data"] = {
                 "pass_count": len(passes),
                 "sort_by": sort_by,
-                "passes": passes,
+                "passes": [_public_pass(p) for p in passes],
             }
 
         self._invoke(callback)
@@ -52,13 +54,17 @@ class PassService:
                 )
                 return
             target = passes[pass_index]
+            wanted = target.get("_event_ids")
             sf = controller.GetStructuredFile()
             draws = []
             for action in Helpers.flatten_actions(controller.GetRootActions()):
                 if not (action.flags & rd.ActionFlags.Drawcall):
                     continue
                 eid = action.eventId
-                if eid < target["event_id_begin"] or eid > target["event_id_end"]:
+                if wanted is not None:
+                    if eid not in wanted:
+                        continue
+                elif eid < target["event_id_begin"] or eid > target["event_id_end"]:
                     continue
                 controller.SetFrameEvent(eid, False)
                 pipe = controller.GetPipelineState()
@@ -70,8 +76,9 @@ class PassService:
                     "num_instances": int(action.numInstances),
                     "pixel_shader": str(ps) if ps != rd.ResourceId.Null() else None,
                 })
-            target["draws"] = draws
-            result["data"] = target
+            detail = _public_pass(target)
+            detail["draws"] = draws
+            result["data"] = detail
 
         self._invoke(callback)
         if result["error"]:
@@ -83,32 +90,60 @@ def _flag(name, default=0):
     return int(getattr(rd.ActionFlags, name, default) or 0)
 
 
+def _public_pass(p):
+    return dict((k, v) for k, v in p.items() if not k.startswith("_"))
+
+
+def _draw_actions(actions):
+    return [a for a in actions if a.flags & rd.ActionFlags.Drawcall]
+
+
 def _enumerate_passes(controller, ctx):
     sf = controller.GetStructuredFile()
     actions = Helpers.flatten_actions(controller.GetRootActions())
     ranges = _from_pass_flags(actions, sf)
-    source = "pass_boundary"
+    for rng in ranges:
+        rng["source"] = "pass_boundary"
     if not ranges:
         ranges = _from_markers(controller.GetRootActions(), sf)
-        source = "marker"
+        for rng in ranges:
+            rng["source"] = "marker"
+        covered = set()
+        for rng in ranges:
+            covered.update(rng.get("_event_ids") or [])
+        unmarked = [a for a in _draw_actions(actions) if a.eventId not in covered]
+        if unmarked and ranges:
+            ids = [int(a.eventId) for a in unmarked]
+            ranges.append({
+                "name": "Unmarked",
+                "begin": ids[0],
+                "end": ids[-1],
+                "_event_ids": set(ids),
+                "synthetic": True,
+                "source": "unmarked",
+            })
     if not ranges:
         ranges = _from_rt_changes(actions, sf)
-        source = "rt_change"
+        for rng in ranges:
+            rng["source"] = "rt_change"
 
     passes = []
-    for i, rng in enumerate(ranges):
-        draws = [a for a in actions
-                 if (a.flags & rd.ActionFlags.Drawcall)
-                 and rng["begin"] <= a.eventId <= rng["end"]]
-        if not draws and source != "pass_boundary":
+    for rng in ranges:
+        if rng.get("_event_ids") is not None:
+            draws = [a for a in _draw_actions(actions) if a.eventId in rng["_event_ids"]]
+        else:
+            draws = [a for a in _draw_actions(actions)
+                     if rng["begin"] <= a.eventId <= rng["end"]]
+        if not draws and rng.get("source") != "pass_boundary":
             continue
         first = draws[0] if draws else None
         colors, depth = _attachments(ctx, controller, first)
         passes.append({
-            "index": i,
+            "index": 0,
             "name": rng["name"],
             "synthetic": rng.get("synthetic", False),
-            "source": source,
+            "source": rng.get("source"),
+            "_event_ids": rng.get("_event_ids"),
             "event_id_begin": rng["begin"],
             "event_id_end": rng["end"],
             "first_draw_event_id": first.eventId if first else None,
@@ -145,22 +180,27 @@ def _from_pass_flags(actions, sf):
 
 
 def _from_markers(roots, sf):
+    """One pass per marker, counting only its direct draw children.
+
+    Nested markers are walked separately so an outer Camera marker does not
+    swallow DrawOpaque / DrawTransparent.
+    """
     ranges = []
 
     def walk(nodes):
         for action in nodes:
             if action.children and (action.flags & rd.ActionFlags.PushMarker):
-                draws = [c for c in Helpers.flatten_actions(action.children)
-                         if c.flags & rd.ActionFlags.Drawcall]
-                if draws:
+                direct = [c for c in action.children if c.flags & rd.ActionFlags.Drawcall]
+                if direct:
+                    ids = [int(c.eventId) for c in direct]
                     ranges.append({
                         "name": action.GetName(sf),
-                        "begin": action.eventId,
-                        "end": draws[-1].eventId,
+                        "begin": ids[0],
+                        "end": ids[-1],
+                        "_event_ids": set(ids),
                         "synthetic": False,
                     })
-                else:
-                    walk(action.children)
+                walk(action.children)
             elif action.children:
                 walk(action.children)
 
