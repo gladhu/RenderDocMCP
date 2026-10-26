@@ -204,6 +204,14 @@ class RenderDocFacade:
             event_id, resource_id, target, x, y, width, height, sample_count, anomaly_threshold
         )
 
+    def get_post_vs_data(self, event_id, stage="vsout", max_vertices=100):
+        """Post-transform vertex data"""
+        return self._analysis.get_post_vs_data(event_id, stage, max_vertices)
+
+    def export_mesh(self, event_id, output_path):
+        """Export post-VS mesh as OBJ"""
+        return self._analysis.export_mesh(event_id, output_path)
+
     def diagnose_mobile_risks(self, check_categories=None, severity_filter="all"):
         """Heuristic mobile / TBR risk scan"""
         return self._diagnosis.diagnose_mobile_risks(check_categories, severity_filter)

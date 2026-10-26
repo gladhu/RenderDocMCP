@@ -7,7 +7,7 @@
 3. 移动端着色开销分析（coverage、malioc、材质 uniform 折叠）
 4. 无 PySide2 的自定义 RenderDoc 构建也能启动 MCP Bridge
 
-下文是原仓库 README 的中文版翻译，并已按当前 23 个 MCP 工具补全。
+下文是原仓库 README 的中文版翻译，并已按当前 36 个 MCP 工具和 4 个 Prompt 补全。
 
 # RenderDoc MCP 服务器
 
@@ -94,7 +94,7 @@ uv tool update-shell  # 添加到 PATH
 
 ## MCP 工具列表
 
-共 23 个工具。
+共 36 个工具，另有 4 个分析 Prompt。
 
 ### 会话 / 抓帧
 
@@ -156,6 +156,8 @@ uv tool update-shell  # 添加到 PATH
 | `read_texture_stats` | GPU min/max，标记 NaN / Inf / 负值 / 全 0 |
 | `sample_pixel_region` | 网格采样一块区域，报告异常热点 |
 | `analyze_state_changes` | 统计连续 DC 的 shader/blend/depth/cull/RT 切换，找出可合批区间 |
+| `get_post_vs_data` | 变换后顶点属性（vsin / vsout / gsout） |
+| `export_mesh` | 把该 DC 的 post-VS 网格导出为 OBJ |
 
 > malioc 需要安装 Arm Performance Studio（`malioc` 在 PATH 里），或者设置环境变量 `MALIOC_PATH`。`gpu` 参数要填真机的 GPU 型号，例如 `Mali-G610`。
 >
@@ -295,6 +297,8 @@ pixel_history(x=640, y=360, event_id=9000, target="color0")
 read_texture_stats(event_id=9000, target="color0")
 sample_pixel_region(event_id=9000, sample_count=256)
 analyze_state_changes(marker_filter="DrawOpaqueObjects")
+get_post_vs_data(event_id=5503, stage="vsout", max_vertices=32)
+export_mesh(event_id=5503, output_path="D:\\tmp\\mesh.obj")
 ```
 
 ## 系统要求

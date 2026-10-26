@@ -45,6 +45,8 @@ class RequestHandler:
             "get_resource_usage": self._handle_get_resource_usage,
             "list_shaders": self._handle_list_shaders,
             "analyze_state_changes": self._handle_analyze_state_changes,
+            "get_post_vs_data": self._handle_get_post_vs_data,
+            "export_mesh": self._handle_export_mesh,
         }
 
     def handle(self, request):
@@ -352,3 +354,22 @@ class RequestHandler:
             change_types=params.get("change_types"),
             max_draws=params.get("max_draws", 200),
         )
+
+    def _handle_get_post_vs_data(self, params):
+        """Handle get_post_vs_data request"""
+        event_id = params.get("event_id")
+        if event_id is None:
+            raise ValueError("event_id is required")
+        return self.facade.get_post_vs_data(
+            int(event_id),
+            stage=params.get("stage", "vsout"),
+            max_vertices=params.get("max_vertices", 100),
+        )
+
+    def _handle_export_mesh(self, params):
+        """Handle export_mesh request"""
+        event_id = params.get("event_id")
+        output_path = params.get("output_path")
+        if event_id is None or output_path is None:
+            raise ValueError("event_id and output_path are required")
+        return self.facade.export_mesh(int(event_id), output_path)

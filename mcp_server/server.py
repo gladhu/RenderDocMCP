@@ -826,6 +826,33 @@ def analyze_state_changes(
     return bridge.call("analyze_state_changes", params, timeout=_LONG_TIMEOUT)
 
 
+@mcp.tool
+def get_post_vs_data(
+    event_id: int,
+    stage: Literal["vsin", "vsout", "gsout"] = "vsout",
+    max_vertices: int = 100,
+) -> dict:
+    """
+    Post-transform vertex attributes (VS input, VS output, or GS output).
+    Returns attribute layout plus up to max_vertices unpacked floats.
+    """
+    return bridge.call(
+        "get_post_vs_data",
+        {"event_id": event_id, "stage": stage, "max_vertices": max_vertices},
+        timeout=_LONG_TIMEOUT,
+    )
+
+
+@mcp.tool
+def export_mesh(event_id: int, output_path: str) -> dict:
+    """Export the draw's post-VS mesh as an OBJ (position / normal / uv when present)."""
+    return bridge.call(
+        "export_mesh",
+        {"event_id": event_id, "output_path": output_path},
+        timeout=_LONG_TIMEOUT,
+    )
+
+
 # ==================== Analysis prompts ====================
 
 

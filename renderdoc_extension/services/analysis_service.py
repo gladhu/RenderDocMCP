@@ -7,6 +7,8 @@ and pixel reads are executed by the device GPU, not the local PC.
 """
 
 import math
+import os
+import struct
 
 import renderdoc as rd
 
@@ -638,4 +640,173 @@ class AnalysisService:
             }
 
         self._invoke(callback)
+        return result["data"]
+
+    def get_post_vs_data(self, event_id, stage="vsout", max_vertices=100):
+        """Post-transform vertex attributes after VS or GS"""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        stage_map = {
+            "vsin": rd.MeshDataStage.VSIn,
+            "vsout": rd.MeshDataStage.VSOut,
+            "gsout": getattr(rd.MeshDataStage, "GSOut", rd.MeshDataStage.VSOut),
+        }
+        if stage not in stage_map:
+            raise ValueError("Unknown stage: %s (vsin/vsout/gsout)" % stage)
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            controller.SetFrameEvent(int(event_id), True)
+            postvs = controller.GetPostVSData(0, 0, stage_map[stage])
+            if postvs.vertexResourceId == rd.ResourceId.Null():
+                result["error"] = "No post-VS data at event %d" % event_id
+                return
+            pipe = controller.GetPipelineState()
+            refl_stage = rd.ShaderStage.Geometry if stage == "gsout" else rd.ShaderStage.Vertex
+            refl = pipe.GetShaderReflection(refl_stage)
+            attrs = []
+            if refl is not None:
+                sigs = refl.inputSignature if stage == "vsin" else refl.outputSignature
+                for sig in sigs:
+                    name = sig.varName or getattr(sig, "semanticIdxName", "") or sig.semanticName
+                    attrs.append({
+                        "name": str(name),
+                        "var_type": str(sig.varType),
+                        "comp_count": int(sig.compCount),
+                    })
+            total = int(postvs.numIndices)
+            n = min(total, int(max_vertices))
+            stride = int(postvs.vertexByteStride)
+            if stride < 4:
+                result["error"] = "Invalid vertex stride %d" % stride
+                return
+            raw = controller.GetBufferData(postvs.vertexResourceId, postvs.vertexByteOffset, n * stride)
+            floats_per = stride // 4
+            vertices = []
+            for i in range(n):
+                off = i * stride
+                if off + stride > len(raw):
+                    break
+                verts = list(struct.unpack_from("%df" % floats_per, raw, off))
+                vertices.append([round(v, 6) for v in verts])
+            result["data"] = {
+                "event_id": int(event_id),
+                "stage": stage,
+                "attributes": attrs,
+                "vertex_stride": stride,
+                "total_vertices": total,
+                "returned_vertices": len(vertices),
+                "vertices": vertices,
+            }
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+    def export_mesh(self, event_id, output_path):
+        """Export post-VS mesh as OBJ (position / normal / uv when present)"""
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        if not output_path:
+            raise ValueError("output_path is required")
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            controller.SetFrameEvent(int(event_id), True)
+            postvs = controller.GetPostVSData(0, 0, rd.MeshDataStage.VSOut)
+            if postvs.vertexResourceId == rd.ResourceId.Null():
+                result["error"] = "No post-VS data at event %d" % event_id
+                return
+            pipe = controller.GetPipelineState()
+            refl = pipe.GetShaderReflection(rd.ShaderStage.Vertex)
+            pos_i = 0
+            nrm_i = uv_i = None
+            float_off = 0
+            if refl is not None:
+                for sig in refl.outputSignature:
+                    name = (sig.semanticName or sig.varName or "").upper()
+                    if "POSITION" in name and pos_i == 0:
+                        pos_i = float_off
+                    elif "NORMAL" in name and nrm_i is None:
+                        nrm_i = float_off
+                    elif "TEXCOORD" in name and uv_i is None:
+                        uv_i = float_off
+                    float_off += int(sig.compCount)
+            total = int(postvs.numIndices)
+            stride = int(postvs.vertexByteStride)
+            if stride < 4:
+                result["error"] = "Invalid vertex stride %d" % stride
+                return
+            raw = controller.GetBufferData(postvs.vertexResourceId, postvs.vertexByteOffset, total * stride)
+            floats_per = stride // 4
+            positions, normals, uvs = [], [], []
+            for i in range(total):
+                off = i * stride
+                if off + stride > len(raw):
+                    break
+                vf = list(struct.unpack_from("%df" % floats_per, raw, off))
+                if pos_i + 2 < len(vf):
+                    positions.append((vf[pos_i], vf[pos_i + 1], vf[pos_i + 2]))
+                if nrm_i is not None and nrm_i + 2 < len(vf):
+                    normals.append((vf[nrm_i], vf[nrm_i + 1], vf[nrm_i + 2]))
+                if uv_i is not None and uv_i + 1 < len(vf):
+                    uvs.append((vf[uv_i], vf[uv_i + 1]))
+
+            topo = "TriangleList"
+            try:
+                topo = str(pipe.GetPrimitiveTopology())
+            except Exception:
+                pass
+            triangles = []
+            if "Strip" in topo:
+                for i in range(len(positions) - 2):
+                    triangles.append((i, i + 1, i + 2) if i % 2 == 0 else (i, i + 2, i + 1))
+            elif "Fan" in topo:
+                for i in range(1, len(positions) - 1):
+                    triangles.append((0, i, i + 1))
+            else:
+                for i in range(0, len(positions) - 2, 3):
+                    triangles.append((i, i + 1, i + 2))
+
+            folder = os.path.dirname(output_path)
+            if folder and not os.path.isdir(folder):
+                os.makedirs(folder)
+            lines = [
+                "# RenderDoc MCP mesh event %d" % int(event_id),
+                "# vertices %d topology %s" % (len(positions), topo),
+            ]
+            for p in positions:
+                lines.append("v %.6f %.6f %.6f" % p)
+            for n in normals:
+                lines.append("vn %.6f %.6f %.6f" % n)
+            for t in uvs:
+                lines.append("vt %.6f %.6f" % t)
+            has_n = len(normals) == len(positions)
+            has_t = len(uvs) == len(positions)
+            for a, b, c in triangles:
+                i1, i2, i3 = a + 1, b + 1, c + 1
+                if has_n and has_t:
+                    lines.append("f %d/%d/%d %d/%d/%d %d/%d/%d" % (i1, i1, i1, i2, i2, i2, i3, i3, i3))
+                elif has_n:
+                    lines.append("f %d//%d %d//%d %d//%d" % (i1, i1, i2, i2, i3, i3))
+                elif has_t:
+                    lines.append("f %d/%d %d/%d %d/%d" % (i1, i1, i2, i2, i3, i3))
+                else:
+                    lines.append("f %d %d %d" % (i1, i2, i3))
+            with open(output_path, "w") as f:
+                f.write("\n".join(lines) + "\n")
+            result["data"] = {
+                "event_id": int(event_id),
+                "output_path": output_path,
+                "topology": topo,
+                "vertices": len(positions),
+                "normals": len(normals),
+                "uvs": len(uvs),
+                "triangles": len(triangles),
+            }
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
         return result["data"]
