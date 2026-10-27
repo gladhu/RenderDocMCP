@@ -290,6 +290,7 @@ class CaptureManager:
     def _ensure_adb_remote(self):
         """Connect the UI replay to the plugged-in Android device."""
         import os
+        import time
 
         ctrl = rd.GetDeviceProtocolController("adb")
         devices = [str(item) for item in ctrl.GetDevices()]
@@ -313,10 +314,17 @@ class CaptureManager:
                     break
             except Exception:
                 host = None
-            import time
             time.sleep(0.5)
         if host is None or not host.IsValid():
             raise ValueError("RenderDoc 没有枚举到远程主机 %s" % hostname)
+
+        # The phone-side renderdoccmd stops when the previous session dies; start it again.
+        try:
+            if not host.IsServerRunning():
+                host.Launch()
+                time.sleep(2.0)
+        except Exception:
+            pass
 
         details = self.ctx.Replay().ConnectToRemoteServer(host)
         remote = self.ctx.Replay().CurrentRemote()

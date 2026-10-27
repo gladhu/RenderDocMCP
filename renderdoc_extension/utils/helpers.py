@@ -11,6 +11,7 @@ import renderdoc as rd
 # getattr/dir on them inside qrenderdoc crashes the process.
 _ENUM_TABLES = {
     "GraphicsAPI": {0: "D3D11", 1: "D3D12", 2: "OpenGL", 3: "Vulkan"},
+    "ShaderStage": {0: "vertex", 1: "hull", 2: "domain", 3: "geometry", 4: "pixel", 5: "compute"},
     "GPUVendor": {
         0: "Unknown", 1: "ARM", 2: "AMD", 3: "Broadcom", 4: "Imagination",
         5: "Intel", 6: "nVidia", 7: "Qualcomm", 8: "Verisilicon", 9: "Software", 10: "Samsung",

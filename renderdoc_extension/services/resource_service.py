@@ -36,16 +36,19 @@ class ResourceService:
         def callback(controller):
             # Parse resource ID
             try:
-                rid = Parsers.parse_resource_id(resource_id)
+                target_id = Parsers.extract_numeric_id(resource_id)
             except Exception:
                 result["error"] = "Invalid resource ID: %s" % resource_id
                 return
 
-            # Find buffer
+            # Find buffer by numeric id: a ResourceId rebuilt from text does not
+            # compare equal to the live one on this build
             buf_desc = None
+            rid = None
             for buf in controller.GetBuffers():
-                if buf.resourceId == rid:
+                if Parsers.extract_numeric_id(str(buf.resourceId)) == target_id:
                     buf_desc = buf
+                    rid = buf.resourceId
                     break
 
             if not buf_desc:

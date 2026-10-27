@@ -114,7 +114,7 @@ class ActionService:
             buffers = controller.GetBuffers()
 
             result["summary"] = {
-                "api": str(api),
+                "api": Helpers.enum_name("GraphicsAPI", api),
                 "total_actions": total_actions[0],
                 "statistics": stats,
                 "top_level_markers": top_markers,
@@ -302,7 +302,8 @@ class ActionService:
 
             result["data"] = {
                 "available": True,
-                "unit": str(counter_desc.unit),
+                # timings are converted to seconds above; str(unit) is just an integer on this build
+                "unit": "seconds",
                 "timings": timings,
                 "total_duration_ms": total_duration[0],
                 "count": len(timings),

@@ -82,7 +82,7 @@ class PipelineService:
 
             pipeline_info = {
                 "event_id": event_id,
-                "api": str(api),
+                "api": Helpers.enum_name("GraphicsAPI", api),
             }
 
             # Shader stages with detailed bindings
@@ -111,7 +111,7 @@ class PipelineService:
                         controller, pipe, stage, reflection
                     )
 
-                    stages[str(stage)] = stage_info
+                    stages[Helpers.enum_name("ShaderStage", stage)] = stage_info
 
             pipeline_info["shaders"] = stages
 
@@ -122,16 +122,17 @@ class PipelineService:
                     try:
                         v = pipe.GetViewport(i)
                         if v.width > 0 and v.height > 0:
-                            viewports.append(
-                                {
-                                    "x": v.x,
-                                    "y": v.y,
-                                    "width": v.width,
-                                    "height": v.height,
-                                    "min_depth": v.minDepth,
-                                    "max_depth": v.maxDepth,
-                                }
-                            )
+                            entry = {
+                                "x": v.x,
+                                "y": v.y,
+                                "width": v.width,
+                                "height": v.height,
+                                "min_depth": v.minDepth,
+                                "max_depth": v.maxDepth,
+                            }
+                            # GL reports all 16 slots even when only one is used
+                            if entry not in viewports:
+                                viewports.append(entry)
                         else:
                             break
                     except Exception:
@@ -164,7 +165,7 @@ class PipelineService:
             # Input assembly / topology (API-agnostic)
             try:
                 topo = pipe.GetPrimitiveTopology()
-                pipeline_info["input_assembly"] = {"topology": str(topo)}
+                pipeline_info["input_assembly"] = {"topology": Helpers.enum_name("Topology", topo)}
             except Exception:
                 pass
 

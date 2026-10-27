@@ -31,7 +31,7 @@ class RenderDocBridge:
         # host/port are kept for API compatibility but not used
         self.host = host
         self.port = port
-        self.timeout = 30.0  # seconds
+        self.timeout = 120.0  # seconds (remote phone replay can be slow)
 
     def call(self, method: str, params: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
         """Call a method on the RenderDoc extension (timeout in seconds, default self.timeout)"""
@@ -78,6 +78,11 @@ class RenderDocBridge:
 
                     # Clean up response file
                     os.remove(RESPONSE_FILE)
+
+                    # An earlier call that timed out client-side may still answer later;
+                    # drop responses that belong to another request.
+                    if response.get("id") != request["id"]:
+                        continue
 
                     if "error" in response:
                         error = response["error"]

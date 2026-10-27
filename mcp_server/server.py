@@ -3,6 +3,7 @@ RenderDoc MCP Server
 FastMCP 2.0 server providing access to RenderDoc capture data.
 """
 
+import time
 from typing import Literal
 
 from fastmcp import FastMCP
@@ -86,7 +87,7 @@ def get_draw_calls(
         params["only_actions"] = only_actions
     if flags_filter is not None:
         params["flags_filter"] = flags_filter
-    return bridge.call("get_draw_calls", params)
+    return bridge.call("get_draw_calls", params, timeout=_LONG_TIMEOUT)
 
 
 @mcp.tool
@@ -121,7 +122,7 @@ def find_draws_by_shader(
     params: dict[str, object] = {"shader_name": shader_name}
     if stage is not None:
         params["stage"] = stage
-    return bridge.call("find_draws_by_shader", params)
+    return bridge.call("find_draws_by_shader", params, timeout=_LONG_TIMEOUT)
 
 
 @mcp.tool
@@ -135,7 +136,7 @@ def find_draws_by_texture(texture_name: str) -> dict:
     Returns a list of matching draw calls with event IDs and match reasons.
     Searches SRVs, UAVs, and render targets.
     """
-    return bridge.call("find_draws_by_texture", {"texture_name": texture_name})
+    return bridge.call("find_draws_by_texture", {"texture_name": texture_name}, timeout=_LONG_TIMEOUT)
 
 
 @mcp.tool
@@ -149,7 +150,7 @@ def find_draws_by_resource(resource_id: str) -> dict:
     Returns a list of matching draw calls with event IDs and match reasons.
     Searches shaders, SRVs, UAVs, render targets, and depth targets.
     """
-    return bridge.call("find_draws_by_resource", {"resource_id": resource_id})
+    return bridge.call("find_draws_by_resource", {"resource_id": resource_id}, timeout=_LONG_TIMEOUT)
 
 
 @mcp.tool
@@ -199,7 +200,7 @@ def get_action_timings(
         params["marker_filter"] = marker_filter
     if exclude_markers is not None:
         params["exclude_markers"] = exclude_markers
-    return bridge.call("get_action_timings", params)
+    return bridge.call("get_action_timings", params, timeout=_LONG_TIMEOUT)
 
 
 @mcp.tool
@@ -280,7 +281,7 @@ def get_texture_data(
     params = {"resource_id": resource_id, "mip": mip, "slice": slice, "sample": sample}
     if depth_slice is not None:
         params["depth_slice"] = depth_slice
-    return bridge.call("get_texture_data", params)
+    return bridge.call("get_texture_data", params, timeout=_LONG_TIMEOUT)
 
 
 @mcp.tool
@@ -320,6 +321,10 @@ def list_captures(directory: str) -> dict:
     return bridge.call("list_captures", {"directory": directory})
 
 
+_OPEN_CAPTURE_WAIT = 180.0  # seconds to wait for LoadCapture to finish
+_OPEN_CAPTURE_SETTLE = 20.0  # seconds to let the UI finish after the load
+
+
 @mcp.tool
 def open_capture(
     capture_path: str,
@@ -342,10 +347,36 @@ def open_capture(
     including which device (local or remote) is used for replay.
     Note: This will close any currently open capture.
     """
-    params: dict[str, object] = {"capture_path": capture_path}
+    # wait=False: the extension runs on RenderDoc's UI thread, which LoadCapture needs
+    # in order to finish, so the extension must not spin-wait for it. Poll from here.
+    params: dict[str, object] = {"capture_path": capture_path, "wait": False}
     if use_remote is not None:
         params["use_remote"] = use_remote
-    return bridge.call("open_capture", params)
+    result = bridge.call("open_capture", params, timeout=120.0)
+
+    deadline = time.time() + _OPEN_CAPTURE_WAIT
+    while time.time() < deadline:
+        time.sleep(1.0)
+        # get_replay_context only reads UI state; get_capture_status would invoke the
+        # replay thread while the capture is still being brought up.
+        ctx = bridge.call("get_replay_context")
+        if ctx.get("capture_loaded"):
+            break
+    else:
+        raise RenderDocBridgeError(
+            "Capture loading timed out after %d seconds" % _OPEN_CAPTURE_WAIT
+        )
+
+    # IsCaptureLoaded() turns true before the UI has finished initialising the capture;
+    # replay calls issued right away crashed qrenderdoc's ReplayManager thread.
+    time.sleep(_OPEN_CAPTURE_SETTLE)
+    status = bridge.call("get_capture_status")
+
+    result.pop("loading", None)
+    result["api"] = status.get("api")
+    if status.get("vendor"):
+        result["vendor"] = status["vendor"]
+    return result
 
 
 # ==================== Performance analysis ====================
