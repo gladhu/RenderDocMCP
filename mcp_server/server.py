@@ -493,15 +493,35 @@ def get_shader_source(
     return result
 
 
-def _shader_cost(selection: dict[str, object], stage: str, gpu: str, fold_uniforms: bool,
-                 overrides: dict[str, str] | None) -> tuple[dict, dict]:
-    from . import malioc
+_COMPILER_DEFAULT_GPU = {"mali": "Mali-G610", "adreno": "a650"}
 
+
+def _compiler(compiler: str):
+    """(module, default gpu, report key, version) for the chosen offline compiler"""
+    if compiler == "mali":
+        from . import malioc
+        return malioc, _COMPILER_DEFAULT_GPU["mali"], "malioc", malioc.malioc_version
+    if compiler == "adreno":
+        from . import aoc
+        return aoc, _COMPILER_DEFAULT_GPU["adreno"], "aoc", aoc.aoc_version
+    raise ValueError("compiler must be 'mali' or 'adreno'")
+
+
+def _report_cost(report: dict | None) -> float | None:
+    """Per-pixel cost of one report: malioc bound cycles, or aoc instruction count"""
+    if not report or "error" in report:
+        return None
+    return report.get("bound_cycles", report.get("cost"))
+
+
+def _shader_cost(selection: dict[str, object], stage: str, compiler: str, gpu: str | None,
+                 fold_uniforms: bool, overrides: dict[str, str] | None) -> tuple[dict, dict]:
+    module, default_gpu, _, _ = _compiler(compiler)
     params = dict(selection, stage=stage, fold_uniforms=fold_uniforms)
     if overrides:
         params["overrides"] = overrides
     data = bridge.call("get_shader_sources", params, timeout=_LONG_TIMEOUT)
-    reports = malioc.analyze_many(data["sources"], stage=stage, gpu=gpu)
+    reports = module.analyze_many(data["sources"], stage, gpu or default_gpu)
     return data, reports
 
 
@@ -512,12 +532,14 @@ def analyze_shader_cost(
     event_id_min: int | None = None,
     event_id_max: int | None = None,
     stage: Literal["vertex", "pixel"] = "pixel",
-    gpu: str = "Mali-G610",
+    compiler: Literal["mali", "adreno"] = "mali",
+    gpu: str | None = None,
     fold_uniforms: bool = True,
     overrides: dict[str, str] | None = None,
 ) -> dict:
     """
-    Static shader cost with the Mali Offline Compiler (malioc) for the selected draws.
+    Static shader cost with a mobile offline compiler for the selected draws:
+    Mali (malioc) or Adreno (aoc).
 
     With fold_uniforms (default), each draw's UnityPerMaterial values are folded
     into the source, so the reported cycles are for the path that material
@@ -528,17 +550,23 @@ def analyze_shader_cost(
     behind uniform branches, but underestimates branch-free shaders; use
     fold_uniforms=False for the cost the GPU actually pays there.
 
-    Returns per unique source: bound cycles per pixel/vertex, per-pipeline cycles
-    (arith/varying/texture...), work registers, thread occupancy, fp16 ratio and
-    late-ZS / coverage flags (discard), plus which draws use it.
-    Use the device GPU name for 'gpu' (e.g. "Mali-G610", "Mali-G710", "Mali-G76").
-    Requires malioc (Arm Performance Studio) on PATH or MALIOC_PATH.
+    Returns per unique source, plus which draws use it:
+    - mali: bound cycles per pixel/vertex, per-pipeline cycles (arith/varying/
+      texture...), work registers, thread occupancy, fp16 ratio, late-ZS / coverage
+      flags (discard). 'gpu' is the core name, default "Mali-G610" (e.g. "Mali-G710").
+      Requires malioc (Arm Performance Studio) on PATH or MALIOC_PATH.
+    - adreno: instruction counts per class (alu32/alu16/texture/flow control...),
+      registers (full/half), fiber occupancy, scratch spilling. aoc has no cycle model,
+      so 'cost' is the total instruction count (comparable only between Adreno
+      shaders). 'gpu' is the architecture, default "a650" (e.g. "a730", "a740").
+      Requires aoc (Qualcomm Adreno SDK) on PATH or AOC_PATH.
+    Pick the compiler that matches the capture device GPU (see get_replay_context).
     """
-    from . import malioc
-
+    _, default_gpu, report_key, version = _compiler(compiler)
+    gpu = gpu or default_gpu
     data, reports = _shader_cost(
         _selection(event_ids, marker_filter, event_id_min, event_id_max),
-        stage, gpu, fold_uniforms, overrides,
+        stage, compiler, gpu, fold_uniforms, overrides,
     )
     by_source: dict[str, dict] = {}
     for draw in data["draws"]:
@@ -547,15 +575,16 @@ def analyze_shader_cost(
             continue
         entry = by_source.setdefault(sid, {
             "source_id": sid, "shader": draw["shader"], "draw_count": 0,
-            "sample_event_ids": [], "textures": draw["textures"], "malioc": reports.get(sid),
+            "sample_event_ids": [], "textures": draw["textures"], report_key: reports.get(sid),
         })
         entry["draw_count"] += 1
         if len(entry["sample_event_ids"]) < 5:
             entry["sample_event_ids"].append(draw["event_id"])
     sources = sorted(by_source.values(), key=lambda e: -e["draw_count"])
     return {
+        "compiler": compiler,
         "gpu": gpu,
-        "malioc_version": malioc.malioc_version(),
+        "%s_version" % report_key: version(),
         "stage": stage,
         "fold_uniforms": fold_uniforms,
         "draw_count": len(data["draws"]),
@@ -571,25 +600,28 @@ def estimate_shading_cost(
     event_id_min: int | None = None,
     event_id_max: int | None = None,
     event_ids: list[int] | None = None,
-    gpu: str = "Mali-G610",
+    compiler: Literal["mali", "adreno"] = "mali",
+    gpu: str | None = None,
     fold_uniforms: bool = True,
     top_n: int = 30,
 ) -> dict:
     """
     Estimate where fragment shading cost goes in a frame:
     pixels shaded per draw (depth-test overlay, measured on the replay device)
-    × malioc bound cycles per pixel of that draw's material-folded shader.
+    × offline-compiler cost per pixel of that draw's material-folded shader
+    (compiler="mali": malioc bound cycles; compiler="adreno": aoc instruction count,
+    see analyze_shader_cost for 'gpu' and the Adreno cost caveat).
 
     Results are grouped by pixel shader with the dominant textures to identify
     the material. Use it to rank shaders and to compare before/after captures
     (cycles/pixel is view-independent; total cycles depends on the view).
     Run it with remote replay for mobile captures.
     """
-    from . import malioc
-
+    _, default_gpu, _, version = _compiler(compiler)
+    gpu = gpu or default_gpu
     selection = _selection(event_ids, marker_filter, event_id_min, event_id_max)
     coverage = bridge.call("get_draw_coverage", selection, timeout=_LONG_TIMEOUT)
-    data, reports = _shader_cost(selection, "pixel", gpu, fold_uniforms, None)
+    data, reports = _shader_cost(selection, "pixel", compiler, gpu, fold_uniforms, None)
     source_of = {d["event_id"]: d.get("source_id") for d in data["draws"]}
 
     groups: dict[str, dict] = {}
@@ -597,7 +629,7 @@ def estimate_shading_cost(
     for draw in coverage["draws"]:
         sid = source_of.get(draw["event_id"])
         report = reports.get(sid) if sid else None
-        cyc = report.get("bound_cycles") if report and "error" not in report else None
+        cyc = _report_cost(report)
         g = groups.setdefault(draw["pixel_shader"], {
             "pixel_shader": draw["pixel_shader"], "draw_count": 0, "pixels": 0, "occluded_pixels": 0,
             "cycles": 0.0, "textures": {}, "sample_event_ids": [], "late_zs_draws": 0,
@@ -611,10 +643,11 @@ def estimate_shading_cost(
         else:
             g["cycles"] += draw["passed"] * cyc
             total_cycles += draw["passed"] * cyc
-            if report.get("uses_late_zs_update") or report.get("modifies_coverage"):
+            if report.get("uses_late_zs_update") or report.get("modifies_coverage"):  # mali only
                 g["late_zs_draws"] += 1
-            if report.get("work_registers") is not None:
-                g["work_registers"].add(report["work_registers"])
+            regs = report.get("work_registers", report.get("registers"))
+            if regs is not None:
+                g["work_registers"].add(regs)
         for t in draw["textures"]:
             g["textures"][t] = g["textures"].get(t, 0) + 1
         if len(g["sample_event_ids"]) < 5:
@@ -629,14 +662,16 @@ def estimate_shading_cost(
         g["work_registers"] = sorted(g["work_registers"])
         rows.append(g)
     rows.sort(key=lambda g: -g["cycles"])
+    unit = "malioc bound cycles" if compiler == "mali" else "aoc instructions"
     return {
+        "compiler": compiler,
         "gpu": gpu,
-        "malioc_version": malioc.malioc_version(),
+        "%s_version" % ("malioc" if compiler == "mali" else "aoc"): version(),
         "draw_count": coverage["draw_count"],
         "total_pixels": coverage["total_passed"],
         "total_occluded_pixels": coverage["total_failed"],
         "total_cycles": round(total_cycles),
-        "note": "cycles = sum(pixels_passed x malioc bound cycles); relative ranking, not wall time",
+        "note": "cycles = sum(pixels_passed x %s); relative ranking, not wall time" % unit,
         "shaders": rows[:top_n],
     }
 

@@ -4,7 +4,7 @@
 
 1. 所有图形 API 的 buffer content 获取
 2. 远程设备回放（`open_capture(use_remote=True)`，overlay / 直方图 / 读像素走真机 GPU）
-3. 移动端着色开销分析（coverage、malioc、材质 uniform 折叠）
+3. 移动端着色开销分析（coverage、malioc / aoc、材质 uniform 折叠）
 4. 无 PySide2 的自定义 RenderDoc 构建也能启动 MCP Bridge
 
 下文是原仓库 README 的中文版翻译，并已按当前 36 个 MCP 工具和 4 个 Prompt 补全。
@@ -147,8 +147,8 @@ uv tool update-shell  # 添加到 PATH
 | `get_draw_coverage` | 逐 DC 统计通过深度测试的像素数和被遮挡的像素数（深度测试 overlay + GPU 直方图，不回传图像） |
 | `get_shader_usage` | 按像素着色器给 DC 分组：DC 数、图元数、常用贴图（用来识别是哪个材质） |
 | `get_shader_source` | 导出 GLSL 源码，可以把 UnityPerMaterial 的实际取值折叠成 `#define`，还原该材质实际执行的分支路径 |
-| `analyze_shader_cost` | 对选中的 DC 跑 malioc（默认按材质参数折叠）：各流水线单元的周期数、寄存器、线程占用率、fp16 比例、late ZS / discard |
-| `estimate_shading_cost` | 用「像素数 × malioc 每像素周期」估算各 Shader 的着色开销占比，用于排热点、对比优化前后 |
+| `analyze_shader_cost` | 对选中的 DC 跑离线编译器（默认按材质参数折叠）。`compiler="mali"`（默认）用 malioc：各流水线单元的周期数、寄存器、线程占用率、fp16 比例、late ZS / discard；`compiler="adreno"` 用 aoc：各类指令数、寄存器、fiber 占用率、scratch 溢出 |
+| `estimate_shading_cost` | 用「像素数 × 每像素开销」估算各 Shader 的着色开销占比，用于排热点、对比优化前后。Mali 用 malioc 周期，Adreno 用 aoc 指令数 |
 | `save_texture` | 保存贴图或某个事件的 color / depth RT 到本地图片，远程回放时同样可用 |
 | `pick_pixel` | 读取某个事件之后某个像素的颜色或深度 |
 | `diagnose_mobile_risks` | 扫描精度 / 性能 / 兼容性 / GPU 特性风险（R11G11B10、D16、超大贴图、过多 Clear、discard） |
@@ -159,7 +159,9 @@ uv tool update-shell  # 添加到 PATH
 | `get_post_vs_data` | 按索引顺序返回变换后顶点；只解码 float/half |
 | `export_mesh` | 按索引缓冲把 post-VS 网格导出为 OBJ（float/half） |
 
-> malioc 需要安装 Arm Performance Studio（`malioc` 在 PATH 里），或者设置环境变量 `MALIOC_PATH`。`gpu` 参数要填真机的 GPU 型号，例如 `Mali-G610`。
+> malioc 需要安装 Arm Performance Studio（`malioc` 在 PATH 里），或者设置环境变量 `MALIOC_PATH`。`compiler="mali"` 时 `gpu` 填真机的 GPU 型号，例如 `Mali-G610`。
+>
+> Adreno 分析需要 Qualcomm Adreno SDK 里的 `aoc`（在 PATH 里，或设置 `AOC_PATH`）。`compiler="adreno"` 时 `gpu` 填架构，例如 `a650`（默认）、`a730`、`a740`。aoc 没有周期模型，开销用总指令数表示，只能在 Adreno shader 之间比较，不能和 Mali 的周期数互比。
 >
 > `get_draw_coverage` 的 overlay 忽略 shader discard，alpha test 的 DC 可能略偏大。
 >
@@ -306,7 +308,7 @@ export_mesh(event_id=5503, output_path="D:\\tmp\\mesh.obj")
 - Python 3.10+
 - [uv](https://docs.astral.sh/uv/)
 - RenderDoc 1.20+
-- 移动端着色分析：Arm Performance Studio（`malioc`），或设置 `MALIOC_PATH`
+- 移动端着色分析：Arm Performance Studio（`malioc`，或设置 `MALIOC_PATH`）；Adreno 需 Qualcomm Adreno SDK（`aoc`，或设置 `AOC_PATH`）
 - 远程回放：RenderDoc 已通过 ADB 等连上目标设备，并在 Replay Context 中选中该设备
 
 > 已在 Windows + DirectX 11，以及 Windows + 移动端 GLES 远程回放场景下使用。Linux/macOS + Vulkan/OpenGL 可能也能运行，但尚未系统验证。
