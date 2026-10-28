@@ -216,6 +216,26 @@ LLM 常把整型参数传成空串 `""` 或数字字符串 `"5"`，stage 写成�
 | `analyze_performance` | 性能：Pass 热点、coverage / shading cost、状态切换、合批 |
 | `find_rendering_issue` | 按问题描述排查：Pass → 像素统计 / history → 精度诊断 |
 
+### Android / Vulkan 抓帧
+
+`scripts/capture_android.py` 不经 RenderDoc UI，在 **debuggable** 的应用上抓一帧并拷回 PC（手机用 adb 连接）：
+
+```bash
+python scripts/capture_android.py --package com.example.game \
+    --activity com.unity3d.player.UnityPlayerActivity --out D:\farm\renderdocAI\game_vulkan.rdc
+```
+
+- 原因：targetSdk >= 30 的应用受包可见性限制看不到 RenderDoc 包，常规的 gpu_debug_layers 流程会静默失败，
+  Unity 随后回退到 OpenGL ES。脚本改为用 `run-as` 把 RenderDoc 的层库复制进应用自己的数据目录。
+  不需要降低 targetSdk；非 debuggable 的包抓不了（需要 Development Build）。
+- 抓完会还原手机（settings、层文件、应用进程、端口转发）；`--keep` 保留现场。
+- 回放抓到的 Vulkan 帧需要手机上的 RenderDoc 远程服务：`open_capture(path, use_remote=True)`。
+
+Vulkan 下已支持：`analyze_pass_bandwidth`（直接读 render pass 的 loadOp/storeOp）、`get_renderpass_list`
+（按 render pass 划分）、`get_draw_coverage` / 过度绘制 / 状态切换 / 风险（含 SPIR-V discard 检测）、
+着色与顶点成本（SPIR-V 直接交给 malioc，仅 Mali；无 uniform 折叠）、贴图足迹、快照对比与综合报告。
+未覆盖：动态渲染（`vkCmdBeginRendering`）只有合成数据测试；Adreno 的 Vulkan 着色成本。
+
 ### 推荐的移动端分析流程
 
 ```

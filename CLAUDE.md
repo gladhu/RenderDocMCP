@@ -127,6 +127,17 @@ get_action_timings(marker_filter="Camera.Render", exclude_markers=["GUI.Repaint"
 **注意**: GPUタイミングカウンターはハードウェア/ドライバーによっては利用できない場合があります。
 `available: false` が返された場合、そのキャプチャではタイミング情報を取得できません。
 
+## Vulkan 注意事項
+
+- Vulkan 的绘制动作 `outputs/depthOut` 为空，目标属于 render pass：用 `services/draw_targets.py` / `vk_passes.py`
+  由调用流得到事件到目标的映射，不要依赖 `action.outputs`。
+- 不要读 `tex.creationFlags`：组合标志值（交换链图像）会让 qrenderdoc 在 `enum.py` 里崩溃，交换链按资源名识别。
+- Shader 是 SPIR-V（`refl.rawBytes`），没有 GLSL；discard 用 SPIR-V 指令扫描，成本交给 malioc 的 `.spv` 输入。
+- 原型开发可以不经 GUI：adb forward 手机远程服务 `localabstract:renderdoc_39920`，用 `renderdoc` 的
+  `CreateRemoteServerConnection` + `OpenCapture` 在独立 Python 里回放，更稳定也更快。
+- 抓帧用 `scripts/capture_android.py`（debuggable 应用，`run-as` 放入层库，不必降 targetSdk）。
+- 多个 qrenderdoc 实例同时存在时用 `RENDERDOC_MCP_IPC_DIR` 给各自独立的 IPC 目录。
+
 ## 通信プロトコル
 
 ファイルベースIPC:
