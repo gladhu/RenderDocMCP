@@ -345,14 +345,22 @@ class ActionService:
 
             def walk(actions, path):
                 for action in actions:
-                    if action.children:
-                        walk(action.children, path + [action.GetName(sf)])
-                    if not (action.flags & rd.ActionFlags.Drawcall):
+                    # Read everything this action needs BEFORE descending into its children, the way
+                    # Serializers.serialize_actions does. Reading action.flags after the recursion
+                    # returned access-violated qrenderdoc's replay thread on freshly loaded captures.
+                    children = action.children
+                    flags = action.flags
+                    name = action.GetName(sf)
+                    is_draw = bool(flags & rd.ActionFlags.Drawcall)
+                    instances = int(action.numInstances) if is_draw else 0
+                    indices = int(action.numIndices) if is_draw else 0
+                    event_id = int(action.eventId)
+                    if children:
+                        walk(children, path + [name])
+                    if not is_draw:
                         continue
                     if needle and not any(needle in m.lower() for m in path):
                         continue
-                    instances = int(action.numInstances)
-                    indices = int(action.numIndices)
                     instanced = instances > 1
                     wasted = instanced and instances <= 2
                     key = "/".join(path[:2]) or "(no marker)"
@@ -365,7 +373,7 @@ class ActionService:
                         if wasted:
                             bucket["wasted"] += 1
                     if instanced:
-                        top.append({"event_id": int(action.eventId), "instances": instances,
+                        top.append({"event_id": event_id, "instances": instances,
                                     "indices": indices, "wasted": wasted, "pass": key})
 
             walk(controller.GetRootActions(), [])
