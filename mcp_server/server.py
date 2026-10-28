@@ -1400,22 +1400,6 @@ def get_cached_message(
 # ==================== Before / after comparison ====================
 
 
-def _instancing_overall(actions: list) -> dict:
-    draws, stack = [], list(actions)
-    while stack:
-        a = stack.pop()
-        stack.extend(a.get("children") or [])
-        if "Drawcall" in a.get("flags", []):
-            draws.append(a)
-    instanced = sum(1 for a in draws if a.get("num_instances", 0) > 1)
-    return {"overall": {
-        "total_draws": len(draws),
-        "instanced_draws": instanced,
-        "instancing_ratio": round(instanced / len(draws), 4) if draws else 0,
-        "total_indices_submitted": sum(a.get("num_indices", 0) * max(1, a.get("num_instances", 0)) for a in draws),
-    }}
-
-
 def _collect_snapshot(name: str, include_shading_cost: bool, compiler: str, gpu: str | None,
                       include_draw_analysis: bool = False) -> dict:
     """Run the analysis tools on the loaded capture and condense them into a snapshot"""
@@ -1423,14 +1407,7 @@ def _collect_snapshot(name: str, include_shading_cost: bool, compiler: str, gpu:
     summary = bridge.call("get_frame_summary")
     draws = summary.get("statistics", {}).get("draw_calls") or 200
     pass_list = bridge.call("get_renderpass_list", {"sort_by": "index"}, timeout=_LONG_TIMEOUT)
-    # Instancing totals from the plain draw list. stat_instancing_efficiency (same numbers) walks the action
-    # tree itself and access-violated qrenderdoc in its walk 3 times in a row on freshly loaded captures.
-    draw_list = bridge.call(
-        "get_draw_calls",
-        {"include_children": True, "only_actions": True, "flags_filter": ["Drawcall"]},
-        timeout=_LONG_TIMEOUT,
-    )
-    instancing = _instancing_overall(draw_list.get("actions", []))
+    instancing = bridge.call("stat_instancing_efficiency", {"marker_filter": "", "top_n": 1}, timeout=_LONG_TIMEOUT)
     state = bridge.call("analyze_state_changes", {"max_draws": int(draws)}, timeout=_LONG_TIMEOUT)
     textures = bridge.call("list_frame_textures", {"sort_by": "size", "top_n": 1}, timeout=_LONG_TIMEOUT)
     risks = bridge.call("diagnose_mobile_risks", {"severity_filter": "all"}, timeout=_LONG_TIMEOUT)
