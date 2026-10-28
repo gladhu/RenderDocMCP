@@ -3,6 +3,7 @@ Resource information service for RenderDoc.
 """
 
 import base64
+import re
 
 import renderdoc as rd
 
@@ -349,6 +350,160 @@ class ResourceService:
             raise ValueError(result["error"])
         return result["data"]
 
+    def list_buffers(self, size_min=0, size_max=0, name_filter="", group_by_size=False,
+                     group_by_name=False, with_usage=False, unused_only=False, limit=0):
+        """Census of the capture's buffers: id, size, name, optionally usage.
+
+        Answers "why does this frame have 1300 buffers": group_by_size shows how
+        many buffers share one size (hundreds of identical small UBOs, say),
+        unused_only lists buffers no event ever binds or copies (dead weight).
+
+        Args:
+            size_min / size_max: byte length bounds (0 = unbounded)
+            name_filter: case-insensitive substring of the resource name
+            group_by_size: histogram by length instead of the raw list
+            group_by_name: histogram by name with trailing digits stripped
+            with_usage: add usage_count / first_event / last_event per buffer
+            unused_only: keep only buffers without any real usage (implies with_usage)
+            limit: cap the raw list (0 = all)
+        """
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        want_usage = bool(with_usage or unused_only)
+        result = {"data": None}
+
+        def callback(controller):
+            buffers = controller.GetBuffers()
+            needle = name_filter.lower() if name_filter else ""
+            entries = []
+            for buf in buffers:
+                length = int(buf.length)
+                if size_min and length < size_min:
+                    continue
+                if size_max and length > size_max:
+                    continue
+                name = self.ctx.GetResourceName(buf.resourceId) or ""
+                if needle and needle not in name.lower():
+                    continue
+                entry = {"resource_id": str(buf.resourceId), "length": length, "name": name}
+                if want_usage:
+                    events = _real_usage_events(controller, buf.resourceId)
+                    if unused_only and events:
+                        continue
+                    entry["usage_count"] = len(events)
+                    if events:
+                        entry["first_event"] = min(events)
+                        entry["last_event"] = max(events)
+                entries.append(entry)
+
+            data = {
+                "total_capture_buffers": len(buffers),
+                "matched": len(entries),
+                "matched_bytes": sum(e["length"] for e in entries),
+            }
+            if group_by_size:
+                groups = {}
+                for e in entries:
+                    groups.setdefault(e["length"], []).append(e["resource_id"])
+                data["size_buckets"] = [
+                    {"length": size, "count": len(ids), "total_bytes": size * len(ids),
+                     "sample_ids": ids[:5]}
+                    for size, ids in sorted(groups.items(), key=lambda kv: -len(kv[1]))
+                ]
+            if group_by_name:
+                groups = {}
+                for e in entries:
+                    key = re.sub(r"[_\s]?\d+$", "", e["name"]) or "(unnamed)"
+                    g = groups.setdefault(key, {"count": 0, "total_bytes": 0, "sample_ids": []})
+                    g["count"] += 1
+                    g["total_bytes"] += e["length"]
+                    if len(g["sample_ids"]) < 3:
+                        g["sample_ids"].append(e["resource_id"])
+                data["name_groups"] = [
+                    dict(name_pattern=k, **v)
+                    for k, v in sorted(groups.items(), key=lambda kv: -kv[1]["count"])
+                ]
+            if not group_by_size and not group_by_name:
+                data["buffers"] = entries[:limit] if limit and limit > 0 else entries
+            result["data"] = data
+
+        self._invoke(callback)
+        return result["data"]
+
+    def get_buffer_bindings_at_event(self, event_id):
+        """Every buffer bound at one draw: vertex buffers, index buffer and the
+        constant buffers of each shader stage, with offsets and sizes.
+
+        Constant buffers are listed by reflection index (as in read_constant_buffer),
+        which is what tells blocks apart on GLES where all bind points read 0.
+        """
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        result = {"data": None}
+        null = rd.ResourceId.Null()
+
+        def rid_text(rid):
+            return "No Resource" if rid == null else str(rid)
+
+        def size_or_none(size):
+            # 2**64-1 means "to the end of the buffer", not a real size
+            return None if int(size) >= 2 ** 63 else int(size)
+
+        def callback(controller):
+            controller.SetFrameEvent(event_id, True)
+            pipe = controller.GetPipelineState()
+            data = {"event_id": event_id, "vertex_buffers": [], "index_buffer": None,
+                    "constant_buffers_per_stage": {}}
+            try:
+                # GLES reports every attribute slot (32 here); keep the bound ones.
+                # Iterate the returned list directly: holding a reference to it
+                # crashed qrenderdoc's replay thread on this build.
+                slots = 0
+                for i, vb in enumerate(pipe.GetVBuffers()):
+                    slots += 1
+                    if vb.resourceId == null:
+                        continue
+                    data["vertex_buffers"].append({
+                        "slot": i, "resource_id": rid_text(vb.resourceId),
+                        "byte_offset": vb.byteOffset, "byte_stride": vb.byteStride,
+                        "byte_size": size_or_none(vb.byteSize),
+                    })
+                data["vertex_slots_total"] = slots
+            except Exception as e:
+                data["vertex_buffers_error"] = str(e)
+            try:
+                ib = pipe.GetIBuffer()
+                data["index_buffer"] = {
+                    "resource_id": rid_text(ib.resourceId),
+                    "byte_offset": ib.byteOffset, "byte_size": size_or_none(ib.byteSize),
+                }
+            except Exception as e:
+                data["index_buffer_error"] = str(e)
+            for stage_name, stage in (("vertex", rd.ShaderStage.Vertex), ("pixel", rd.ShaderStage.Pixel),
+                                      ("geometry", rd.ShaderStage.Geometry), ("compute", rd.ShaderStage.Compute)):
+                if pipe.GetShader(stage) == null:
+                    continue
+                refl = pipe.GetShaderReflection(stage)
+                if refl is None:
+                    continue
+                blocks = []
+                for i, cb in enumerate(refl.constantBlocks):
+                    entry = {"index": i, "name": cb.name, "declared_byte_size": cb.byteSize}
+                    try:
+                        desc = pipe.GetConstantBlock(stage, i, 0).descriptor
+                        entry["bound_resource_id"] = rid_text(desc.resource)
+                        if desc.resource != null:
+                            entry["byte_offset"] = desc.byteOffset
+                            entry["bound_byte_size"] = desc.byteSize
+                    except Exception as e:
+                        entry["error"] = str(e)
+                    blocks.append(entry)
+                data["constant_buffers_per_stage"][stage_name] = blocks
+            result["data"] = data
+
+        self._invoke(callback)
+        return result["data"]
+
 
 def _live_resource_id(controller, resource_id):
     """Find the replay's ResourceId. Reconstructed ids do not compare equal."""
@@ -385,3 +540,19 @@ def _classify_usage(usage_str):
     if any(tok in s for tok in ("Resource", "CopySrc", "ResolveSrc", "InputTarget", "VertexBuffer", "IndexBuffer")):
         return "read"
     return "other"
+
+
+# Usages that only mean the buffer exists or was filled, not that anything consumed it.
+_NOT_A_USE = ("Unused", "CPUWrite", "Barrier")
+
+
+def _real_usage_events(controller, rid):
+    """Event ids where a buffer is actually bound, copied or cleared."""
+    events = []
+    try:
+        for u in controller.GetUsage(rid):
+            if Helpers.enum_name("ResourceUsage", u.usage) not in _NOT_A_USE:
+                events.append(int(u.eventId))
+    except Exception:
+        pass
+    return events

@@ -44,6 +44,8 @@ class RequestHandler:
             "read_texture_stats": self._handle_read_texture_stats,
             "sample_pixel_region": self._handle_sample_pixel_region,
             "get_resource_usage": self._handle_get_resource_usage,
+            "list_buffers": self._handle_list_buffers,
+            "get_buffer_bindings_at_event": self._handle_get_buffer_bindings_at_event,
             "list_shaders": self._handle_list_shaders,
             "analyze_state_changes": self._handle_analyze_state_changes,
             "get_post_vs_data": self._handle_get_post_vs_data,
@@ -354,6 +356,26 @@ class RequestHandler:
         if resource_id is None:
             raise ValueError("resource_id is required")
         return self.facade.get_resource_usage(resource_id)
+
+    def _handle_list_buffers(self, params):
+        """Handle list_buffers request"""
+        return self.facade.list_buffers(
+            size_min=int(params.get("size_min") or 0),
+            size_max=int(params.get("size_max") or 0),
+            name_filter=params.get("name_filter") or "",
+            group_by_size=bool(params.get("group_by_size", False)),
+            group_by_name=bool(params.get("group_by_name", False)),
+            with_usage=bool(params.get("with_usage", False)),
+            unused_only=bool(params.get("unused_only", False)),
+            limit=int(params.get("limit") or 0),
+        )
+
+    def _handle_get_buffer_bindings_at_event(self, params):
+        """Handle get_buffer_bindings_at_event request"""
+        event_id = params.get("event_id")
+        if event_id is None:
+            raise ValueError("event_id is required")
+        return self.facade.get_buffer_bindings_at_event(int(event_id))
 
     def _handle_list_shaders(self, params):
         """Handle list_shaders request"""

@@ -896,6 +896,52 @@ def get_resource_usage(resource_id: str) -> dict:
 
 
 @mcp.tool
+def list_buffers(
+    size_min: LInt = 0,
+    size_max: LInt = 0,
+    name_filter: str = "",
+    group_by_size: bool = False,
+    group_by_name: bool = False,
+    with_usage: bool = False,
+    unused_only: bool = False,
+    limit: LInt = 0,
+) -> dict:
+    """
+    Census of the capture's buffers (id, byte length, name).
+
+    Use it to answer "why are there 1300 buffers": group_by_size shows how many
+    buffers share a size (hundreds of identical small UBOs point at per-draw
+    buffer churn), group_by_name groups by name with trailing digits stripped.
+    unused_only lists buffers that no event ever binds, copies or clears (dead
+    weight, "ghost" buffers); with_usage adds usage_count / first_event / last_event
+    per buffer (one GetUsage per buffer, slower on big captures).
+
+    Args:
+        size_min / size_max: byte length bounds, 0 = unbounded
+        name_filter: case-insensitive substring of the resource name
+        group_by_size / group_by_name: return a histogram instead of the raw list
+        limit: cap the raw list, 0 = all
+    """
+    params: dict[str, object] = {
+        "size_min": size_min, "size_max": size_max, "name_filter": name_filter,
+        "group_by_size": group_by_size, "group_by_name": group_by_name,
+        "with_usage": with_usage, "unused_only": unused_only, "limit": limit,
+    }
+    return bridge.call("list_buffers", params, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
+def get_buffer_bindings_at_event(event_id: ReqInt) -> dict:
+    """
+    Every buffer bound at one draw call: vertex buffers (slot, offset, stride),
+    the index buffer, and the constant buffers of each shader stage with the
+    bound resource and byte range. Constant buffers are listed by reflection
+    index, the same index read_constant_buffer takes.
+    """
+    return bridge.call("get_buffer_bindings_at_event", {"event_id": event_id}, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
 def list_shaders(
     stage: StageVPCOpt = None,
     top_n: LInt = 50,

@@ -151,6 +151,16 @@ class RenderDocFacade:
         """Usage history of a texture or buffer"""
         return self._resource.get_resource_usage(resource_id)
 
+    def list_buffers(self, size_min=0, size_max=0, name_filter="", group_by_size=False,
+                     group_by_name=False, with_usage=False, unused_only=False, limit=0):
+        """Buffer census with filters and histograms"""
+        return self._resource.list_buffers(size_min, size_max, name_filter, group_by_size,
+                                           group_by_name, with_usage, unused_only, limit)
+
+    def get_buffer_bindings_at_event(self, event_id):
+        """Buffers bound at one draw call"""
+        return self._resource.get_buffer_bindings_at_event(event_id)
+
     # ==================== Pipeline Operations ====================
 
     def get_shader_info(self, event_id, stage):
