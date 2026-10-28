@@ -30,6 +30,7 @@ class RequestHandler:
             "read_constant_buffer": self._handle_read_constant_buffer,
             "compare_pipeline_states": self._handle_compare_pipeline_states,
             "get_api_calls": self._handle_get_api_calls,
+            "find_pixels": self._handle_find_pixels,
             "stat_instancing_efficiency": self._handle_stat_instancing_efficiency,
             "list_captures": self._handle_list_captures,
             "open_capture": self._handle_open_capture,
@@ -372,6 +373,24 @@ class RequestHandler:
             include_params=bool(params.get("include_params", True)),
             name_filter=params.get("name_filter") or "",
             max_calls=int(params.get("max_calls", 200)),
+        )
+
+    def _handle_find_pixels(self, params):
+        """Handle find_pixels request"""
+        def opt_int(key):
+            value = params.get(key)
+            return None if value is None else int(value)
+        return self.facade.find_pixels(
+            event_id=opt_int("event_id"),
+            resource_id=params.get("resource_id"),
+            target=params.get("target", "color0"),
+            x=int(params.get("x", 0)),
+            y=int(params.get("y", 0)),
+            width=opt_int("width"),
+            height=opt_int("height"),
+            filters=params.get("filters"),
+            max_probes=int(params.get("max_probes", 1024)),
+            max_results=int(params.get("max_results", 50)),
         )
 
     def _handle_compare_pipeline_states(self, params):

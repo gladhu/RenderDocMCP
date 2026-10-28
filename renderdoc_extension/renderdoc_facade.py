@@ -232,6 +232,12 @@ class RenderDocFacade:
             event_id, resource_id, target, x, y, width, height, sample_count, anomaly_threshold
         )
 
+    def find_pixels(self, event_id=None, resource_id=None, target="color0", x=0, y=0,
+                    width=None, height=None, filters=None, max_probes=1024, max_results=50):
+        """Grid-probe a region for pixels matching channel conditions"""
+        return self._analysis.find_pixels(event_id, resource_id, target, x, y, width, height,
+                                          filters, max_probes, max_results)
+
     def get_post_vs_data(self, event_id, stage="vsout", max_vertices=100):
         """Post-transform vertex data"""
         return self._analysis.get_post_vs_data(event_id, stage, max_vertices)

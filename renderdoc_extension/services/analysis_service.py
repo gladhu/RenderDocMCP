@@ -668,6 +668,93 @@ class AnalysisService:
         self._invoke(callback)
         return result["data"]
 
+    def find_pixels(self, event_id=None, resource_id=None, target="color0",
+                    x=0, y=0, width=None, height=None, filters=None,
+                    max_probes=1024, max_results=50):
+        """Grid-probe a region for pixels matching channel conditions.
+
+        filters keys: min_r/max_r, min_g/max_g, min_b/max_b, min_a/max_a (float
+        ranges, inclusive) and has_nan / has_inf / has_negative. A pixel must satisfy
+        every given condition. Probing is one PickPixel per grid point, so the
+        result is a sample, not an exhaustive scan: small regions are covered
+        fully, large ones with max_probes evenly spaced points.
+        """
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        if event_id is None and resource_id is None:
+            raise ValueError("event_id or resource_id is required")
+        conds = dict(filters or {})
+        known = set(["has_nan", "has_inf", "has_negative"])
+        for ch in "rgba":
+            known.add("min_" + ch)
+            known.add("max_" + ch)
+        unknown = sorted(set(conds) - known)
+        if unknown:
+            raise ValueError("Unknown filter keys: %s (supported: %s)" % (unknown, sorted(known)))
+        if not conds:
+            raise ValueError("filters is empty; give at least one condition, e.g. {\"min_r\": 0.9}")
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            # BlockInvoke swallows exceptions raised in here; report them instead
+            try:
+                run(controller)
+            except Exception as e:
+                result["error"] = str(e)
+
+        def run(controller):
+            if event_id is not None:
+                controller.SetFrameEvent(int(event_id), True)
+            tex = self._resolve_texture(controller, event_id, resource_id, target)
+            tw, th = int(tex.width), int(tex.height)
+            rx, ry = max(0, int(x)), max(0, int(y))
+            rw = min(int(width) if width else tw, tw - rx)
+            rh = min(int(height) if height else th, th - ry)
+            if rw <= 0 or rh <= 0:
+                raise ValueError("Region is empty")
+            budget = min(max(int(max_probes), 1), 4096)
+            total = rw * rh
+            # evenly spaced grid with about `budget` points; stride 1 when the region fits
+            stride = 1 if total <= budget else int(math.ceil(math.sqrt(total / float(budget))))
+            comp = _component_type(tex)
+            matches = []
+            probes = 0
+            hit_count = 0
+            bbox = None
+            for py in range(ry, ry + rh, stride):
+                for px in range(rx, rx + rw, stride):
+                    try:
+                        v = controller.PickPixel(tex.resourceId, px, py, rd.Subresource(0, 0, 0), comp)
+                    except Exception:
+                        continue
+                    probes += 1
+                    px4 = [v.floatValue[i] for i in range(4)]
+                    if not _pixel_matches(px4, conds):
+                        continue
+                    hit_count += 1
+                    bbox = [px, py, px, py] if bbox is None else [
+                        min(bbox[0], px), min(bbox[1], py), max(bbox[2], px), max(bbox[3], py)]
+                    if len(matches) < int(max_results):
+                        matches.append({"x": px, "y": py, "value": [round(c, 6) for c in px4]})
+            result["data"] = {
+                "resource_id": str(tex.resourceId),
+                "region": {"x": rx, "y": ry, "width": rw, "height": rh},
+                "filters": conds,
+                "probe_stride": stride,
+                "probes": probes,
+                "exhaustive": stride == 1,
+                "matched_probes": hit_count,
+                "match_rate": round(hit_count / float(max(probes, 1)), 4),
+                "bounding_box": ({"x0": bbox[0], "y0": bbox[1], "x1": bbox[2], "y1": bbox[3]} if bbox else None),
+                "matches": matches,
+                "matches_truncated": hit_count > len(matches),
+            }
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
     def get_post_vs_data(self, event_id, stage="vsout", max_vertices=100):
         """Post-transform vertices in draw order (index buffer applied)"""
         if not self.ctx.IsCaptureLoaded():
@@ -1091,3 +1178,21 @@ def _faces_from_run(slots, topo):
                 continue
             faces.append((tri[0], tri[1], tri[2]))
     return faces
+
+
+def _pixel_matches(px, conds):
+    """True when the RGBA float pixel satisfies every condition."""
+    for i, ch in enumerate("rgba"):
+        lo = conds.get("min_" + ch)
+        if lo is not None and not px[i] >= lo:      # `not >=` also rejects NaN
+            return False
+        hi = conds.get("max_" + ch)
+        if hi is not None and not px[i] <= hi:
+            return False
+    if conds.get("has_nan") and not any(math.isnan(c) for c in px):
+        return False
+    if conds.get("has_inf") and not any(math.isinf(c) for c in px):
+        return False
+    if conds.get("has_negative") and not any(c < 0 for c in px):
+        return False
+    return True

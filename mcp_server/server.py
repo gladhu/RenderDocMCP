@@ -1150,6 +1150,52 @@ def get_api_calls(
 
 
 @mcp.tool
+def find_pixels(
+    filters: dict[str, float | bool],
+    event_id: OptInt = None,
+    resource_id: str | None = None,
+    target: str = "color0",
+    x: LInt = 0,
+    y: LInt = 0,
+    width: OptInt = None,
+    height: OptInt = None,
+    max_probes: LInt = 1024,
+    max_results: LInt = 50,
+) -> dict:
+    """
+    Find pixels in a render target or texture that satisfy channel conditions, and
+    report where they are. Use it to locate black holes, blown-out highlights,
+    one flat color, or NaN/Inf/negative pixels, then pixel_history on a hit.
+
+    Args:
+        filters: conditions that must ALL hold. Float ranges (inclusive)
+            min_r / max_r / min_g / max_g / min_b / max_b / min_a / max_a, and
+            booleans has_nan / has_inf / has_negative.
+            e.g. {"max_r": 0.01, "max_g": 0.01, "max_b": 0.01} finds near-black pixels.
+        event_id + target ("color0".. / "depth"), or resource_id: what to search
+        x, y, width, height: sub-region (default the whole texture)
+        max_probes: how many pixels to read (max 4096). One read per probe, so this
+            is a SAMPLE: a region with <= max_probes pixels is covered fully,
+            a larger one with an evenly spaced grid (probe_stride says how sparse).
+            "exhaustive" in the result tells which case you got.
+        max_results: matches to list (bounding_box and matched_probes cover all)
+    """
+    params: dict[str, object] = {
+        "filters": filters, "target": target, "x": x, "y": y,
+        "max_probes": max_probes, "max_results": max_results,
+    }
+    if event_id is not None:
+        params["event_id"] = event_id
+    if resource_id is not None:
+        params["resource_id"] = resource_id
+    if width is not None:
+        params["width"] = width
+    if height is not None:
+        params["height"] = height
+    return bridge.call("find_pixels", params, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
 def get_cached_message(
     message_id: str,
     page: LInt = 1,
