@@ -694,47 +694,7 @@ class PipelineService:
             except Exception:
                 pass
 
-            # Fixed-function state. The generic accessors cover D3D / Vulkan;
-            # every field is optional because GL builds do not expose them all.
-            def put(section, key, getter):
-                try:
-                    snap.setdefault(section, {})[key] = getter()
-                except Exception:
-                    pass
-
-            try:
-                blends = pipe.GetColorBlend().blends
-                for i, b in enumerate(blends[:8]):
-                    put("blend", "rt%d" % i, lambda b=b: (
-                        bool(b.enabled), str(b.colorBlend.source), str(b.colorBlend.destination),
-                        str(b.colorBlend.operation), int(b.writeMask)))
-            except Exception:
-                pass
-            try:
-                ds = pipe.GetDepthState()
-                put("depth", "test", lambda: bool(ds.depthEnable))
-                put("depth", "write", lambda: bool(ds.depthWrites))
-                put("depth", "func", lambda: str(ds.depthFunction))
-            except Exception:
-                pass
-            try:
-                st = pipe.GetStencilState()
-                put("stencil", "test", lambda: bool(st.stencilEnable))
-                put("stencil", "front_ref", lambda: int(st.frontFace.reference))
-                put("stencil", "front_func", lambda: str(st.frontFace.function))
-            except Exception:
-                pass
-            try:
-                rast = pipe.GetRasterizer()
-                put("rasterizer", "cull_mode", lambda: str(rast.cullMode))
-                put("rasterizer", "front_ccw", lambda: bool(rast.frontCCW))
-                put("rasterizer", "depth_bias", lambda: float(rast.depthBias))
-            except Exception:
-                pass
-            # The generic accessors above are empty on GL / GLES replays; read the
-            # GL pipeline state instead so blend / depth / cull still diff.
-            if not any(k in snap for k in ("blend", "depth", "stencil", "rasterizer")):
-                _gl_fixed_function(controller, snap)
+            snap.update(Helpers.fixed_function_state(controller, pipe))
             return snap
 
         def callback(controller):
@@ -760,48 +720,3 @@ class PipelineService:
 
         self._invoke(callback)
         return result["data"]
-
-
-def _gl_fixed_function(controller, snap):
-    """Blend / depth / stencil / rasterizer state from the GL pipeline state."""
-    try:
-        if Helpers.enum_name("GraphicsAPI", controller.GetAPIProperties().pipelineType) != "OpenGL":
-            return
-        gl = controller.GetGLPipelineState()
-    except Exception:
-        return
-
-    def put(section, key, getter):
-        try:
-            snap.setdefault(section, {})[key] = getter()
-        except Exception:
-            pass
-
-    try:
-        for i, b in enumerate(gl.framebuffer.blendState.blends[:8]):
-            put("blend", "rt%d" % i, lambda b=b: (
-                bool(b.enabled), str(b.colorBlend.source), str(b.colorBlend.destination),
-                str(b.colorBlend.operation), int(b.writeMask)))
-    except Exception:
-        pass
-    try:
-        ds = gl.depthState
-        put("depth", "test", lambda: bool(ds.depthEnable))
-        put("depth", "write", lambda: bool(ds.depthWrites))
-        put("depth", "func", lambda: str(ds.depthFunction))
-    except Exception:
-        pass
-    try:
-        st = gl.stencilState
-        put("stencil", "test", lambda: bool(st.stencilEnable))
-        put("stencil", "front_ref", lambda: int(st.frontFace.reference))
-        put("stencil", "front_func", lambda: str(st.frontFace.function))
-    except Exception:
-        pass
-    try:
-        rs = gl.rasterizer.state
-        put("rasterizer", "cull_mode", lambda: str(rs.cullMode))
-        put("rasterizer", "front_ccw", lambda: bool(rs.frontCCW))
-        put("rasterizer", "depth_bias", lambda: float(rs.depthBias))
-    except Exception:
-        pass

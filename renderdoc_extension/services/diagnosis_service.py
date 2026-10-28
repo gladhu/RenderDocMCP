@@ -193,29 +193,19 @@ class DiagnosisService:
                         cur["shader"] = str(pipe.GetShader(rd.ShaderStage.Pixel))
                     except Exception:
                         cur["shader"] = None
-                if "blend" in track:
-                    try:
-                        cb = pipe.GetColorBlend()
-                        b = cb.blends[0] if getattr(cb, "blends", None) else None
-                        cur["blend"] = (
-                            bool(b.enabled),
-                            str(b.colorBlend.source),
-                            str(b.colorBlend.destination),
-                        ) if b else None
-                    except Exception:
-                        cur["blend"] = None
-                if "depth" in track:
-                    try:
-                        ds = pipe.GetDepthState()
-                        cur["depth"] = (bool(ds.depthEnable), str(ds.depthFunction))
-                    except Exception:
-                        cur["depth"] = None
-                if "cull" in track:
-                    try:
-                        rast = pipe.GetRasterizer()
-                        cur["cull"] = str(rast.cullMode)
-                    except Exception:
-                        cur["cull"] = None
+                if track & set(["blend", "depth", "cull"]):
+                    # PipeState has no GetColorBlend / GetDepthState / GetRasterizer; the
+                    # old calls raised and every one of these fields stayed "unavailable"
+                    ff = Helpers.fixed_function_state(controller, pipe)
+                    values = {
+                        "blend": _freeze(ff.get("blend")),
+                        "depth": _freeze((ff.get("depth") or {}).get("test"),
+                                         (ff.get("depth") or {}).get("func")),
+                        "cull": _freeze((ff.get("rasterizer") or {}).get("cull_mode")),
+                    }
+                    for name in ("blend", "depth", "cull"):
+                        if name in track:
+                            cur[name] = values[name]
                 if "render_target" in track:
                     cur["render_target"] = Helpers.action_rt_key(action)
 
@@ -341,3 +331,12 @@ def _glsl_has_discard(source):
     text = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
     text = re.sub(r"//.*?$", "", text, flags=re.M)
     return _DISCARD_RE.search(text) is not None
+
+
+def _freeze(*values):
+    """Comparable stand-in for a state value; None when nothing could be read."""
+    if all(v is None for v in values):
+        return None
+    if len(values) == 1 and isinstance(values[0], dict):
+        return tuple(sorted(values[0].items()))
+    return values

@@ -198,6 +198,94 @@ class Helpers:
         return quirks
 
     @staticmethod
+    def fixed_function_state(controller, pipe):
+        """Blend / depth / stencil / rasterizer state as plain comparable values.
+
+        PipeState itself only exposes GetColorBlends() and GetStencilFaces();
+        there is no GetColorBlend / GetDepthState / GetRasterizer / GetStencilState
+        (calling them raised AttributeError, which callers swallowed, so these
+        sections were silently empty). Depth and rasterizer state live on the
+        API-specific pipeline objects, so the replay API decides where to look.
+        Every field is read independently and left out when unavailable.
+
+        Returns {"blend": {...}, "depth": {...}, "stencil": {...}, "rasterizer": {...}}
+        with only the sections that could be read.
+        """
+        out = {}
+
+        def put(section, key, getter):
+            try:
+                out.setdefault(section, {})[key] = getter()
+            except Exception:
+                pass
+
+        def first(obj, *names):
+            """First attribute of obj that exists (names differ between APIs)."""
+            for name in names:
+                try:
+                    return getattr(obj, name)
+                except Exception:
+                    continue
+            raise AttributeError(names[0])
+
+        # Blend: one entry per render target; GL repeats the same state in every
+        # slot, so collapse identical entries instead of reporting eight copies.
+        try:
+            # Index a fresh GetColorBlends() result per element and read it at once:
+            # list()/for over the returned container (or holding it) crashed qrenderdoc's
+            # replay thread, the same way keeping GetVBuffers() in a variable did.
+            rows = []
+            for i in range(min(len(pipe.GetColorBlends()), 8)):
+                b = pipe.GetColorBlends()[i]
+                rows.append((
+                    bool(b.enabled), str(b.colorBlend.source), str(b.colorBlend.destination),
+                    str(b.colorBlend.operation), str(b.alphaBlend.source),
+                    str(b.alphaBlend.destination), int(b.writeMask)))
+            if rows:
+                if all(r == rows[0] for r in rows):
+                    out["blend"] = {"all_rts": rows[0]}
+                else:
+                    out["blend"] = dict(("rt%d" % i, r) for i, r in enumerate(rows))
+        except Exception:
+            pass
+
+        try:
+            front, back = pipe.GetStencilFaces()
+            put("stencil", "front", lambda: (int(front.reference), str(front.function),
+                                             int(front.compareMask), int(front.writeMask)))
+            put("stencil", "back", lambda: (int(back.reference), str(back.function),
+                                            int(back.compareMask), int(back.writeMask)))
+        except Exception:
+            pass
+
+        # Depth test / write and rasterizer come from the API-specific state.
+        try:
+            api = Helpers.enum_name("GraphicsAPI", controller.GetAPIProperties().pipelineType)
+            if api in ("D3D11", "D3D12"):
+                state = controller.GetD3D11PipelineState() if api == "D3D11" else controller.GetD3D12PipelineState()
+                ds = state.outputMerger.depthStencilState
+                raster = state.rasterizer.state
+            elif api == "Vulkan":
+                state = controller.GetVulkanPipelineState()
+                ds, raster = state.depthStencil, state.rasterizer
+            elif api == "OpenGL":
+                state = controller.GetGLPipelineState()
+                ds, raster = state.depthState, state.rasterizer.state
+            else:
+                ds = raster = None
+            if ds is not None:
+                put("depth", "test", lambda: bool(first(ds, "depthEnable", "depthTestEnable")))
+                put("depth", "write", lambda: bool(first(ds, "depthWrites", "depthWriteEnable")))
+                put("depth", "func", lambda: str(ds.depthFunction))
+            if raster is not None:
+                put("rasterizer", "cull_mode", lambda: str(raster.cullMode))
+                put("rasterizer", "front_ccw", lambda: bool(raster.frontCCW))
+                put("rasterizer", "depth_bias", lambda: float(raster.depthBias))
+        except Exception:
+            pass
+        return out
+
+    @staticmethod
     def estimate_texture_bytes(tex):
         """Rough uncompressed size including mips / array slices"""
         fmt = str(tex.format.Name()).upper()
