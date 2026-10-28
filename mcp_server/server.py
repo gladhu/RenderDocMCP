@@ -316,6 +316,7 @@ def read_constant_buffer(
     stage: StageReq,
     slot: int | str | None = None,
     array_index: LInt = 0,
+    filter: str | None = None,
 ) -> dict:
     """
     Read one constant buffer (uniform block) of a shader stage at an event, as
@@ -330,6 +331,9 @@ def read_constant_buffer(
             every block reports bind point 0, so use the index from the list.
             Leave empty to list the stage's blocks (index, name, size) first.
         array_index: Element when the block is an array of buffers (default 0)
+        filter: Case-insensitive substring of the variable name; only matching
+            variables are returned (e.g. "rim", "_ST", "unity_SH"). UnityPerMaterial
+            alone has dozens of variables, so filtering keeps the output short.
 
     Returns the bound resource, byte range and per-variable values; a block with
     nothing bound reports status "No Resource".
@@ -337,7 +341,13 @@ def read_constant_buffer(
     params: dict[str, object] = {"event_id": event_id, "stage": stage, "array_index": array_index}
     if slot is not None and not (isinstance(slot, str) and not slot.strip()):
         params["slot"] = slot
-    return bridge.call("read_constant_buffer", params, timeout=_LONG_TIMEOUT)
+    result = bridge.call("read_constant_buffer", params, timeout=_LONG_TIMEOUT)
+    needle = filter.strip().lower() if filter else ""
+    if needle and "variables" in result:
+        total = len(result["variables"])
+        result["variables"] = [v for v in result["variables"] if needle in v["name"].lower()]
+        result["filter"] = {"text": filter, "matched": len(result["variables"]), "total": total}
+    return result
 
 
 @mcp.tool
