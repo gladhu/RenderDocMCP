@@ -42,6 +42,7 @@ class RequestHandler:
             "diagnose_mobile_risks": self._handle_diagnose_mobile_risks,
             "get_renderpass_list": self._handle_get_renderpass_list,
             "get_pass_detail": self._handle_get_pass_detail,
+            "analyze_pass_bandwidth": self._handle_analyze_pass_bandwidth,
             "list_frame_textures": self._handle_list_frame_textures,
             "get_texture_detail": self._handle_get_texture_detail,
             "pixel_history": self._handle_pixel_history,
@@ -301,6 +302,13 @@ class RequestHandler:
         if pass_index is None:
             raise ValueError("pass_index is required")
         return self.facade.get_pass_detail(int(pass_index))
+
+    def _handle_analyze_pass_bandwidth(self, params):
+        """Handle analyze_pass_bandwidth request"""
+        return self.facade.analyze_pass_bandwidth(
+            top_n=int(params.get("top_n", 30)),
+            sort_by=params.get("sort_by", "bytes"),
+        )
 
     def _handle_list_frame_textures(self, params):
         """Handle list_frame_textures request"""

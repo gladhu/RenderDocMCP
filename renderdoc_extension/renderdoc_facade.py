@@ -14,6 +14,7 @@ from .services import (
     AnalysisService,
     DiagnosisService,
     PassService,
+    BandwidthService,
 )
 
 
@@ -30,6 +31,7 @@ class RenderDocFacade:
     - AnalysisService: Coverage, shader sources, texture export
     - DiagnosisService: Mobile / TBR heuristic risks
     - PassService: Render-pass enumeration and detail
+    - BandwidthService: Tile-pass attachment load/store traffic
     """
 
     def __init__(self, ctx):
@@ -51,6 +53,7 @@ class RenderDocFacade:
         self._analysis = AnalysisService(ctx, self._invoke)
         self._diagnosis = DiagnosisService(ctx, self._invoke)
         self._pass = PassService(ctx, self._invoke)
+        self._bandwidth = BandwidthService(ctx, self._invoke)
 
     def _invoke(self, callback):
         """Invoke callback on replay thread via BlockInvoke"""
@@ -263,3 +266,7 @@ class RenderDocFacade:
     def get_pass_detail(self, pass_index):
         """Draws and attachments of one pass"""
         return self._pass.get_pass_detail(pass_index)
+
+    def analyze_pass_bandwidth(self, top_n=30, sort_by="bytes"):
+        """Attachment load/store traffic per tile pass"""
+        return self._bandwidth.analyze_pass_bandwidth(top_n, sort_by)
