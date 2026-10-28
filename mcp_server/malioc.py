@@ -5,6 +5,7 @@ Runs in the MCP server process (full Python), not inside RenderDoc, because
 qrenderdoc's embedded Python cannot reliably spawn subprocesses.
 """
 
+import base64
 import glob
 import json
 import os
@@ -85,13 +86,18 @@ def _summarize(data: dict) -> dict:
     }
 
 
-def analyze_source(source: str, stage: str = "pixel", gpu: str = "Mali-G610") -> dict:
-    """Compile one GLSL source with malioc and return a condensed report"""
+def analyze_source(source: str, stage: str = "pixel", gpu: str = "Mali-G610", language: str = "glsl") -> dict:
+    """Compile one shader with malioc and return a condensed report.
+
+    language "glsl": source is GLSL text. "spirv": source is a base64 SPIR-V binary (Vulkan); malioc picks
+    the input type from the .frag.spv / .vert.spv / .comp.spv suffix."""
     ext = {"pixel": ".frag", "vertex": ".vert", "compute": ".comp"}.get(stage, ".frag")
+    if language == "spirv":
+        ext += ".spv"
     fd, path = tempfile.mkstemp(suffix=ext, prefix="rdmcp_")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(source)
+        with os.fdopen(fd, "wb") as f:
+            f.write(base64.b64decode(source) if language == "spirv" else source.encode("utf-8"))
         out = subprocess.run(
             [find_malioc(), "-c", gpu, "--format", "json", path],
             capture_output=True, text=True, timeout=120,
@@ -111,13 +117,13 @@ def analyze_source(source: str, stage: str = "pixel", gpu: str = "Mali-G610") ->
 
 
 def analyze_many(sources: dict[str, str], stage: str = "pixel", gpu: str = "Mali-G610",
-                 workers: int = 8) -> dict[str, dict]:
+                 workers: int = 8, language: str = "glsl") -> dict[str, dict]:
     """Compile several sources in parallel; failures are reported per source"""
 
     def run(item):
         key, src = item
         try:
-            return key, analyze_source(src, stage, gpu)
+            return key, analyze_source(src, stage, gpu, language)
         except Exception as e:  # keep the batch going
             return key, {"error": str(e)}
 

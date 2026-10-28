@@ -11,6 +11,7 @@ import os
 import struct
 import time
 
+import base64
 import hashlib
 
 import renderdoc as rd
@@ -40,6 +41,7 @@ class _SourceCollector(object):
         self.entries = []
         self.raw_cache = {}
         self.timing = dict.fromkeys(("source", "fold"), 0.0)
+        self.language = "glsl"
 
     def add(self, controller, pipe, action, path):
         shader = pipe.GetShader(self.stage_enum)
@@ -54,14 +56,18 @@ class _SourceCollector(object):
         self.timing["source"] += time.time() - t0
         if text is None:
             self.entries.append({"event_id": action.eventId, "shader": key,
-                                 "error": "source unavailable (only GLSL is supported)"})
+                                 "error": "source unavailable (neither GLSL source nor SPIR-V)"})
             return
         digest = hashlib.md5(text.encode("utf-8", "replace")).hexdigest()[:12]
+        spirv = kind == "spirv"
+        if spirv:
+            self.language = "spirv"
 
         t1 = time.time()
-        defines = self.service._fold_defines(controller, pipe, refl, self.stage_enum, self.blocks)             if self.fold_uniforms else {}
+        # A SPIR-V binary cannot take #define overrides: uniform folding is GLSL only
+        defines = self.service._fold_defines(controller, pipe, refl, self.stage_enum, self.blocks)             if self.fold_uniforms and not spirv else {}
         self.timing["fold"] += time.time() - t1
-        if self.overrides:
+        if self.overrides and not spirv:
             defines.update(self.overrides)
         final = text
         if defines:
@@ -87,7 +93,7 @@ class _SourceCollector(object):
         return {
             "timing_s": dict((k, round(v, 2)) for k, v in timing.items()),
             "stage": self.stage,
-            "language": "glsl",
+            "language": self.language,
             "unique_sources": len(self.sources),
             "sources": self.sources,
             "draws": self.entries,
@@ -434,7 +440,12 @@ class AnalysisService:
         return defines
 
     def _shader_source(self, controller, refl):
-        """(kind, text) - GLSL source for GL/GLES, None otherwise"""
+        """(kind, text): GLSL source for GL/GLES; for Vulkan the SPIR-V binary as base64 (kind "spirv")"""
+        try:
+            if int(refl.encoding) in (3, 7):              # ShaderEncoding.SPIRV, OpenGLSPIRV
+                return "spirv", base64.b64encode(bytes(refl.rawBytes)).decode("ascii")
+        except Exception:
+            pass
         try:
             files = refl.debugInfo.files
             if files and files[0].contents:

@@ -583,7 +583,7 @@ def _shader_cost(selection: dict[str, object], stage: str, compiler: str, gpu: s
 def _compile_sources(data: dict, stage: str, compiler: str, gpu: str | None) -> dict:
     """Offline-compile the sources of one get_shader_sources result"""
     module, default_gpu, _, _ = _compiler(compiler)
-    return module.analyze_many(data["sources"], stage, gpu or default_gpu)
+    return module.analyze_many(data["sources"], stage, gpu or default_gpu, language=data.get("language", "glsl"))
 
 
 @mcp.tool
@@ -622,6 +622,10 @@ def analyze_shader_cost(
       shaders). 'gpu' is the architecture, default "a650" (e.g. "a730", "a740").
       Requires aoc (Qualcomm Adreno SDK) on PATH or AOC_PATH.
     Pick the compiler that matches the capture device GPU (see get_replay_context).
+
+    Vulkan captures: the shaders are SPIR-V binaries, compiled directly by malioc (compiler="mali"
+    only). There is no GLSL to fold, so fold_uniforms / overrides have no effect: the cost is that of
+    the whole shader, including material branches a given draw never takes.
     """
     _, default_gpu, report_key, version = _compiler(compiler)
     gpu = gpu or default_gpu

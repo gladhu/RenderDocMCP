@@ -140,8 +140,11 @@ def analyze_source(source: str, stage: str = "pixel", arch: str = "a650") -> dic
 
 
 def analyze_many(sources: dict[str, str], stage: str = "pixel", arch: str = "a650",
-                 workers: int = 8) -> dict[str, dict]:
+                 workers: int = 8, language: str = "glsl") -> dict[str, dict]:
     """Compile several sources in parallel; failures are reported per source"""
+    if language != "glsl":
+        return dict((key, {"error": "aoc is only wired up for GLSL sources; Vulkan (SPIR-V) shaders can be "
+                                    "compiled with compiler='mali' only"}) for key in sources)
 
     def run(item):
         key, src = item
