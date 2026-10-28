@@ -92,9 +92,11 @@ uv tool update-shell  # 添加到 PATH
 3. 移动端抓帧：在界面左下角 Replay Context 选择手机（`adb://...`），再用 `open_capture(..., use_remote=True)`
 4. 通过 MCP 客户端访问数据
 
+> 真机远程回放大抓帧（几十 MB 的 GLES 抓帧）时，`open_capture` 返回后手机端还在初始化。过早发起回放调用在测试机上多次导致 qrenderdoc 访问冲突崩溃（故障日志在 `%TEMP%\rdmcp_fault.log`）。崩溃原因没有完全查清，建议打开抓帧后先等一两分钟再调用；崩溃后需要重启 RenderDoc 并重新打开抓帧。另外，qrenderdoc 会一直持有已加载的旧版扩展模块，更新扩展后需要重启 RenderDoc。
+
 ## MCP 工具列表
 
-共 36 个工具，另有 4 个分析 Prompt。
+共 41 个工具，另有 4 个分析 Prompt。
 
 ### 会话 / 抓帧
 
@@ -126,7 +128,10 @@ uv tool update-shell  # 添加到 PATH
 |------|------|
 | `get_pipeline_state` | 指定事件的完整管线：各 stage shader、SRV/UAV、sampler、常量缓冲、RT、viewport、IA |
 | `get_shader_info` | 指定 stage 的反汇编、常量缓冲取值、资源绑定 |
+| `read_constant_buffer` | 定点读取某个 stage 的一个常量缓冲（变量名 + 数值）。`slot` 是 shader 常量块的**索引**或 cbuffer 名字（精确 / 子串 / `cb1` 写法），不是 API 绑定点；`slot` 留空则列出该 stage 全部块的 索引-名字-大小 |
 | `get_buffer_contents` | 读取 buffer（可指定 offset/length，Base64） |
+| `list_buffers` | 整帧 buffer 清单（id / 字节长度 / 名字）。`group_by_size` / `group_by_name` 出直方图，`unused_only` 列出从未被绑定、拷贝或清除的 buffer，`with_usage` 追加使用次数与首末 event |
+| `get_buffer_bindings_at_event` | 单个 DC 绑定的 buffer：已绑定的顶点缓冲、索引缓冲，以及各 stage 常量缓冲（按反射索引，含绑定的资源与字节范围） |
 | `get_texture_info` | 贴图元数据（尺寸、格式、mip 等） |
 | `get_texture_data` | 贴图像素数据（mip / slice / 3D slice，Base64） |
 | `list_frame_textures` | 帧内贴图清单：尺寸、格式、显存估算、读写/Clear 次数、是否 RT |
@@ -156,6 +161,8 @@ uv tool update-shell  # 添加到 PATH
 | `read_texture_stats` | GPU min/max，深度目标按 Depth 解释；标记 NaN / Inf / 负值 / 全 0 |
 | `sample_pixel_region` | 网格采样一块区域，报告异常热点 |
 | `analyze_state_changes` | 统计连续 DC 的 shader/blend/depth/cull/RT 切换，找出可合批区间 |
+| `compare_pipeline_states` | 对比两个 event 的管线状态，只返回不同的字段：shader、纹理（按 unit）、常量缓冲（资源+偏移/大小）、顶点/索引缓冲、RT、拓扑、blend/depth/stencil/rasterizer。回答「这两个 DC 看起来一样，为什么没合批」 |
+| `stat_instancing_efficiency` | 整帧实例化统计：实例化 DC 数与占比、实例数分布、「浪费的实例化」（实例数 ≤ 2），按前两层 marker（即各 pass）分桶；只读 action 树，很快 |
 | `get_post_vs_data` | 按索引顺序返回变换后顶点；只解码 float/half |
 | `export_mesh` | 按索引缓冲把 post-VS 网格导出为 OBJ（float/half） |
 
@@ -165,7 +172,21 @@ uv tool update-shell  # 添加到 PATH
 >
 > `get_draw_coverage` 的 overlay 忽略 shader discard，alpha test 的 DC 可能略偏大。
 >
+> `read_constant_buffer` 里整型 / bool 变量的 `value` 目前为空（浮点正常）：现有序列化器引用了本版 RenderDoc 没有的 `rd.VarType.Int`，`get_pipeline_state` 里的常量缓冲同样受影响。
+>
+> `list_buffers(unused_only=True)` 只依据 `GetUsage`，GLES 回放下可能漏记 SSBO / transform feedback 之类的用法，删除 buffer 前请再用 `find_draws_by_resource` 复核。
+>
+> `compare_pipeline_states` 在 GLES 回放下 blend/depth 等固定管线状态走 `GetGLPipelineState()`：blend 枚举是数字，8 个 RT 槽会各报一遍（`diff_count` 偏大，以 `differences` 内容为准）；stencil / rasterizer 读不到时会静默省略。常量缓冲的偏移不同（同一 buffer 的不同偏移）是 SRP Batcher 的正常形态，不代表没合批。
+>
 > `analyze_shader_cost` 默认 `fold_uniforms=True`，对 uniform 分支准确，但对无分支 shader 会把 `lerp(x, y, 0)` 这类运算也常量折叠掉，可能低估真实开销；无分支材质请设 `fold_uniforms=False`。
+
+### 参数容错
+
+LLM 常把整型参数传成空串 `""` 或数字字符串 `"5"`，stage 写成缩写，原本会在进入工具之前就被 schema 拒绝并陷入重试死循环。现在在校验阶段清洗，工具的 JSON schema 不变（仍是 integer / 枚举）：
+
+- 可选或带默认值的整型：`""` / `null` 回落到默认值；必填整型（`event_id`、`x`、`y` 等）传空值会得到带示例的明确错误
+- `"5"`、`" 5 "`、`5.0` 都按 5 处理；`event_ids` 接受 `[1,2]`、`"1,2,3"`、`"[1,2]"` 或单个数字
+- `stage` 大小写不敏感，接受 `vs` / `ps` / `cs` / `gs` / `hs` / `ds` / `frag` 等缩写，统一为 `vertex` / `pixel` / `compute` 等全名
 
 ### 分析提示词（MCP Prompt）
 
@@ -269,6 +290,26 @@ get_buffer_contents(resource_id="ResourceId::123")
 
 # 从偏移量 256 开始获取 512 字节
 get_buffer_contents(resource_id="ResourceId::123", offset=256, length=512)
+```
+
+### 常量缓冲 / buffer / 合批分析
+
+```
+# 先列出 pixel stage 的常量块（索引-名字-大小），再按索引或名字读取
+read_constant_buffer(event_id=5503, stage="ps")
+read_constant_buffer(event_id=5503, stage="ps", slot="UnityPerMaterial")
+read_constant_buffer(event_id=5503, stage="vs", slot=1)
+
+# 整帧 buffer 全貌：按大小聚类、列出从未被使用的 buffer
+list_buffers(group_by_size=true)
+list_buffers(unused_only=true, limit=20)
+list_buffers(name_filter="SM_", size_min=1024, with_usage=true)
+get_buffer_bindings_at_event(event_id=5503)
+
+# 为什么两个 DC 没合批？只看不同的字段
+compare_pipeline_states(event_id_a=5503, event_id_b=5511)
+stat_instancing_efficiency()
+stat_instancing_efficiency(marker_filter="DrawOpaqueObjects", top_n=5)
 ```
 
 ### GPU 计时

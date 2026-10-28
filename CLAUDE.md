@@ -56,6 +56,11 @@ RenderDocMCP/
 | `get_texture_info` | テクスチャメタデータ |
 | `get_texture_data` | テクスチャピクセルデータ取得（mip/slice/3Dスライス対応） |
 | `get_pipeline_state` | パイプライン状態全体 |
+| `read_constant_buffer` | 定数バッファを1つだけ読む。slot は reflection 上のブロック index か cbuffer 名（API のバインド点ではない）。slot 省略で index/名前/サイズの一覧 |
+| `list_buffers` | バッファ一覧（サイズ/名前フィルタ、group_by_size/name、unused_only、with_usage） |
+| `get_buffer_bindings_at_event` | 1 DC にバインドされた VB/IB/定数バッファ |
+| `compare_pipeline_states` | 2 つのイベントのパイプライン状態を比較し、異なるフィールドだけ返す（バッチされなかった理由の調査用） |
+| `stat_instancing_efficiency` | フレーム全体のインスタンシング統計（pass 別、無駄なインスタンス DC 数） |
 
 ### get_draw_calls フィルタリングオプション
 
