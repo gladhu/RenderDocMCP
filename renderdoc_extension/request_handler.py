@@ -28,6 +28,8 @@ class RequestHandler:
             "get_texture_data": self._handle_get_texture_data,
             "get_pipeline_state": self._handle_get_pipeline_state,
             "read_constant_buffer": self._handle_read_constant_buffer,
+            "compare_pipeline_states": self._handle_compare_pipeline_states,
+            "stat_instancing_efficiency": self._handle_stat_instancing_efficiency,
             "list_captures": self._handle_list_captures,
             "open_capture": self._handle_open_capture,
             "get_draw_coverage": self._handle_get_draw_coverage,
@@ -356,6 +358,20 @@ class RequestHandler:
         if resource_id is None:
             raise ValueError("resource_id is required")
         return self.facade.get_resource_usage(resource_id)
+
+    def _handle_compare_pipeline_states(self, params):
+        """Handle compare_pipeline_states request"""
+        a = params.get("event_id_a")
+        b = params.get("event_id_b")
+        if a is None or b is None:
+            raise ValueError("event_id_a and event_id_b are required")
+        return self.facade.compare_pipeline_states(int(a), int(b))
+
+    def _handle_stat_instancing_efficiency(self, params):
+        """Handle stat_instancing_efficiency request"""
+        return self.facade.stat_instancing_efficiency(
+            params.get("marker_filter") or "", int(params.get("top_n", 10))
+        )
 
     def _handle_list_buffers(self, params):
         """Handle list_buffers request"""

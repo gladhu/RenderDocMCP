@@ -111,6 +111,10 @@ class RenderDocFacade:
             exclude_markers=exclude_markers,
         )
 
+    def stat_instancing_efficiency(self, marker_filter="", top_n=10):
+        """Instancing statistics per pass"""
+        return self._action.stat_instancing_efficiency(marker_filter, top_n)
+
     # ==================== Search Operations ====================
 
     def find_draws_by_shader(self, shader_name, stage=None):
@@ -170,6 +174,10 @@ class RenderDocFacade:
     def get_pipeline_state(self, event_id):
         """Get full pipeline state at an event"""
         return self._pipeline.get_pipeline_state(event_id)
+
+    def compare_pipeline_states(self, event_id_a, event_id_b):
+        """Fields that differ between the pipeline states at two events"""
+        return self._pipeline.compare_pipeline_states(event_id_a, event_id_b)
 
     def read_constant_buffer(self, event_id, stage, slot=None, array_index=0):
         """Read one constant buffer, or list the stage's buffers when slot is empty"""

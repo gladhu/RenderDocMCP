@@ -314,3 +314,86 @@ class ActionService:
         if result["error"]:
             raise ValueError(result["error"])
         return result["data"]
+
+    def stat_instancing_efficiency(self, marker_filter="", top_n=10):
+        """Instancing statistics over the frame's draw calls.
+
+        Counts how many draws use GPU instancing, the instance count spread, and
+        "wasted" instanced draws (2 instances or fewer, which would have cost the
+        same as plain draws). Draws are bucketed by their first two marker
+        levels (e.g. "Camera/DrawOpaqueObjects"), so the answer is per pass.
+        Needs only the action tree, no replay of individual events.
+
+        Args:
+            marker_filter: keep draws whose marker path contains this text
+            top_n: how many of the highest-instance-count draws to list
+        """
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None}
+        needle = marker_filter.lower() if marker_filter else ""
+
+        def new_bucket():
+            return {"total": 0, "instanced": 0, "wasted": 0, "instance_counts": [], "indices": 0}
+
+        def callback(controller):
+            sf = controller.GetStructuredFile()
+            overall = new_bucket()
+            buckets = {}
+            top = []
+
+            def walk(actions, path):
+                for action in actions:
+                    if action.children:
+                        walk(action.children, path + [action.GetName(sf)])
+                    if not (action.flags & rd.ActionFlags.Drawcall):
+                        continue
+                    if needle and not any(needle in m.lower() for m in path):
+                        continue
+                    instances = int(action.numInstances)
+                    indices = int(action.numIndices)
+                    instanced = instances > 1
+                    wasted = instanced and instances <= 2
+                    key = "/".join(path[:2]) or "(no marker)"
+                    for bucket in (overall, buckets.setdefault(key, new_bucket())):
+                        bucket["total"] += 1
+                        bucket["indices"] += indices * max(1, instances)
+                        if instanced:
+                            bucket["instanced"] += 1
+                            bucket["instance_counts"].append(instances)
+                        if wasted:
+                            bucket["wasted"] += 1
+                    if instanced:
+                        top.append({"event_id": int(action.eventId), "instances": instances,
+                                    "indices": indices, "wasted": wasted, "pass": key})
+
+            walk(controller.GetRootActions(), [])
+
+            def summarize(b):
+                counts = b["instance_counts"]
+                return {
+                    "total_draws": b["total"],
+                    "instanced_draws": b["instanced"],
+                    "instancing_ratio": round(b["instanced"] / float(b["total"]), 4) if b["total"] else 0,
+                    "wasted_instanced_draws": b["wasted"],
+                    "avg_instances": round(sum(counts) / float(len(counts)), 2) if counts else 0,
+                    "max_instances": max(counts) if counts else 0,
+                    "total_indices_submitted": b["indices"],
+                }
+
+            by_pass = []
+            for key, bucket in buckets.items():
+                row = summarize(bucket)
+                row["marker"] = key
+                by_pass.append(row)
+            by_pass.sort(key=lambda r: -r["total_draws"])
+            top.sort(key=lambda r: -r["instances"])
+            result["data"] = {
+                "overall": summarize(overall),
+                "by_pass": by_pass,
+                "top_instanced_draws": top[:max(0, int(top_n))],
+            }
+
+        self._invoke(callback)
+        return result["data"]

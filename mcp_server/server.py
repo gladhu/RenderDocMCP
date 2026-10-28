@@ -942,6 +942,46 @@ def get_buffer_bindings_at_event(event_id: ReqInt) -> dict:
 
 
 @mcp.tool
+def compare_pipeline_states(event_id_a: ReqInt, event_id_b: ReqInt) -> dict:
+    """
+    Diff the pipeline state at two events and list only the fields that differ:
+    bound shaders, textures (by unit), constant buffers (by reflection index,
+    with buffer offset and size), vertex / index buffers, render targets,
+    topology and, where the API exposes them, blend / depth / stencil / rasterizer.
+
+    Answers "these two draws look the same, why were they not batched?": a
+    different constant buffer offset or texture unit is the usual culprit.
+    Verdict is IDENTICAL when nothing differs.
+    """
+    return bridge.call(
+        "compare_pipeline_states",
+        {"event_id_a": event_id_a, "event_id_b": event_id_b},
+        timeout=_LONG_TIMEOUT,
+    )
+
+
+@mcp.tool
+def stat_instancing_efficiency(marker_filter: str = "", top_n: LInt = 10) -> dict:
+    """
+    Instancing statistics for the frame: how many draws are instanced, instance
+    count spread, and "wasted" instanced draws (2 instances or fewer, no better
+    than plain draws). Bucketed by the first two marker levels, i.e. per pass.
+    Cheap: reads only the action tree. Use it to check whether SRP batcher /
+    GPU instancing is actually merging draws, then drill into a pass with
+    compare_pipeline_states.
+
+    Args:
+        marker_filter: only draws whose marker path contains this text
+        top_n: how many highest-instance-count draws to list
+    """
+    return bridge.call(
+        "stat_instancing_efficiency",
+        {"marker_filter": marker_filter, "top_n": top_n},
+        timeout=_LONG_TIMEOUT,
+    )
+
+
+@mcp.tool
 def list_shaders(
     stage: StageVPCOpt = None,
     top_n: LInt = 50,
