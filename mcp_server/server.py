@@ -3,6 +3,7 @@ RenderDoc MCP Server
 FastMCP 2.0 server providing access to RenderDoc capture data.
 """
 
+import os
 import time
 from typing import Literal
 
@@ -10,7 +11,7 @@ from fastmcp import FastMCP
 
 from .bridge.client import RenderDocBridge, RenderDocBridgeError
 from .config import settings
-from . import result_cache
+from . import compare, draw_analysis, report, result_cache, texture_analysis
 from .params import (
     LInt, OptInt, OptIntList, ReqInt, StageOpt, StageReq, StageVP, StageVPCOpt,
 )
@@ -369,6 +370,9 @@ def list_captures(directory: str) -> dict:
 
 _OPEN_CAPTURE_WAIT = 180.0  # seconds to wait for LoadCapture to finish
 _OPEN_CAPTURE_SETTLE = 20.0  # seconds to let the UI finish after the load
+# compare_captures fires a burst of replay calls right after each load; qrenderdoc crashed in the
+# first ~30 s of a load with a 20 s settle, so it waits longer
+_COMPARE_SETTLE = float(os.environ.get("RENDERDOC_MCP_COMPARE_SETTLE", "60"))
 
 
 @mcp.tool
@@ -393,6 +397,10 @@ def open_capture(
     including which device (local or remote) is used for replay.
     Note: This will close any currently open capture.
     """
+    return _open_capture(capture_path, use_remote, _OPEN_CAPTURE_SETTLE)
+
+
+def _open_capture(capture_path: str, use_remote: bool | None, settle: float) -> dict:
     # wait=False: the extension runs on RenderDoc's UI thread, which LoadCapture needs
     # in order to finish, so the extension must not spin-wait for it. Poll from here.
     params: dict[str, object] = {"capture_path": capture_path, "wait": False}
@@ -415,7 +423,7 @@ def open_capture(
 
     # IsCaptureLoaded() turns true before the UI has finished initialising the capture;
     # replay calls issued right away crashed qrenderdoc's ReplayManager thread.
-    time.sleep(_OPEN_CAPTURE_SETTLE)
+    time.sleep(settle)
     status = bridge.call("get_capture_status")
 
     result.pop("loading", None)
@@ -451,6 +459,7 @@ def get_draw_coverage(
     event_id_min: OptInt = None,
     event_id_max: OptInt = None,
     summary_only: bool = False,
+    with_state: bool = False,
 ) -> dict:
     """
     Measure how many pixels each draw call actually shades, using RenderDoc's
@@ -466,12 +475,14 @@ def get_draw_coverage(
 
     Select draws with event_ids, marker_filter (substring of any ancestor
     marker, e.g. "DrawOpaqueObjects") and/or an event id range.
+
+    Each draw also reports num_indices, num_instances, topology and rt_size; with_state=True
+    adds blend_enabled / depth_test / depth_write (one more state read per draw).
     """
-    data = bridge.call(
-        "get_draw_coverage",
-        _selection(event_ids, marker_filter, event_id_min, event_id_max),
-        timeout=_LONG_TIMEOUT,
-    )
+    params = _selection(event_ids, marker_filter, event_id_min, event_id_max)
+    if with_state:
+        params["with_state"] = True
+    data = bridge.call("get_draw_coverage", params, timeout=_LONG_TIMEOUT)
     if summary_only:
         data = {k: v for k, v in data.items() if k != "draws"}
     return data
@@ -663,12 +674,18 @@ def estimate_shading_cost(
     (cycles/pixel is view-independent; total cycles depends on the view).
     Run it with remote replay for mobile captures.
     """
-    _, default_gpu, _, version = _compiler(compiler)
+    _, default_gpu, _, _ = _compiler(compiler)
     gpu = gpu or default_gpu
     selection = _selection(event_ids, marker_filter, event_id_min, event_id_max)
     coverage = bridge.call("get_draw_coverage", selection, timeout=_LONG_TIMEOUT)
     data, reports = _shader_cost(selection, "pixel", compiler, gpu, fold_uniforms, None)
+    return _shading_result(coverage, data, reports, compiler, gpu, top_n)
+
+
+def _shading_result(coverage: dict, data: dict, reports: dict, compiler: str, gpu: str, top_n: int) -> dict:
+    _, _, _, version = _compiler(compiler)
     source_of = {d["event_id"]: d.get("source_id") for d in data["draws"]}
+    hash_of = {d["event_id"]: d.get("shader_hash") for d in data["draws"]}
 
     groups: dict[str, dict] = {}
     total_cycles = 0.0
@@ -679,7 +696,7 @@ def estimate_shading_cost(
         g = groups.setdefault(draw["pixel_shader"], {
             "pixel_shader": draw["pixel_shader"], "draw_count": 0, "pixels": 0, "occluded_pixels": 0,
             "cycles": 0.0, "textures": {}, "sample_event_ids": [], "late_zs_draws": 0,
-            "work_registers": set(), "unknown_cost_draws": 0,
+            "work_registers": set(), "unknown_cost_draws": 0, "shader_hash": hash_of.get(draw["event_id"]),
         })
         g["draw_count"] += 1
         g["pixels"] += draw["passed"]
@@ -720,6 +737,124 @@ def estimate_shading_cost(
         "note": "cycles = sum(pixels_passed x %s); relative ranking, not wall time" % unit,
         "shaders": rows[:top_n],
     }
+
+
+@mcp.tool
+def estimate_geometry_cost(
+    marker_filter: str | None = None,
+    event_id_min: OptInt = None,
+    event_id_max: OptInt = None,
+    event_ids: OptIntList = None,
+    compiler: Literal["mali", "adreno"] = "mali",
+    gpu: str | None = None,
+    fold_uniforms: bool = True,
+    top_n: LInt = 10,
+) -> dict:
+    """
+    Where the vertex / triangle budget goes: vertices and triangles per marker (pass), per vertex
+    shader and per draw, with the offline-compiler vertex cost (cycles per vertex x vertices).
+
+    Findings:
+    - vertex_heavy_pass: one marker submits >= 20% of all vertices (shadow passes repeat casters
+      per cascade, so they usually show up here)
+    - micro_triangles: a large share of triangles rasterise to fewer than 8 pixels each, which
+      wastes quad lanes (needs LODs / impostors). Backface-culled triangles also lower the figure.
+    Vertex counts are index counts (upper bound); vertex cycles are relative and not comparable
+    with fragment cycles. Needs remote replay for mobile captures (pixel coverage per draw).
+    """
+    selection = _selection(event_ids, marker_filter, event_id_min, event_id_max)
+    coverage = bridge.call("get_draw_coverage", selection, timeout=_LONG_TIMEOUT)
+    data, reports = _shader_cost(selection, "vertex", compiler, gpu, fold_uniforms, None)
+    return _geometry_result(coverage, data, reports, compiler, gpu, int(top_n))
+
+
+def _geometry_result(coverage: dict, data: dict, reports: dict, compiler: str, gpu: str | None, top_n: int) -> dict:
+    vs_info = {}
+    for d in data["draws"]:
+        sid = d.get("source_id")
+        report_ = reports.get(sid) if sid else None
+        vs_info[d["event_id"]] = {
+            "cost": _report_cost(report_) if report_ else None,
+            "hash": d.get("shader_hash"), "shader": d.get("shader"),
+        }
+    result = draw_analysis.geometry_cost(coverage["draws"], vs_info, top_n)
+    _, default_gpu, _, _ = _compiler(compiler)
+    result.update({"compiler": compiler, "gpu": gpu or default_gpu})
+    return result
+
+
+@mcp.tool
+def estimate_texture_bandwidth(
+    marker_filter: str | None = None,
+    event_id_min: OptInt = None,
+    event_id_max: OptInt = None,
+    event_ids: OptIntList = None,
+    top_n: LInt = 15,
+) -> dict:
+    """
+    Texture sampling footprint of the frame: for every texture, an upper bound of the memory it can
+    pull per frame = min(texture size, pixels that sample it x bytes per texel), summed over draws.
+
+    Findings:
+    - low_utilization: a big non-atlas texture of which the frame samples at most 25% of the texels
+      (resolution higher than needed; ignore atlases drawn in small parts)
+    - uncompressed_texture: large RGBA8 / RGBA16F ... colour texture, with the saving if ASTC 6x6
+    - heavy_render_target_read: a full-size render target sampled as a texture (store + fetch)
+    Also lists the heaviest textures, footprint per pass, and single-mip colour textures (info only).
+
+    This is not measured bandwidth: caches, filter taps and anisotropy are not modelled, one texel
+    per pixel is assumed. Use it to rank textures and compare before / after. Needs per-draw pixel
+    coverage, so mobile captures need remote replay.
+    """
+    selection = _selection(event_ids, marker_filter, event_id_min, event_id_max)
+    coverage = bridge.call("get_draw_coverage", dict(selection, with_textures=True), timeout=_LONG_TIMEOUT)
+    textures = bridge.call("list_frame_textures", {"sort_by": "size", "top_n": 100000}, timeout=_LONG_TIMEOUT)
+    return texture_analysis.texture_footprint(textures["textures"], coverage["draws"], int(top_n))
+
+
+@mcp.tool
+def analyze_overdraw(
+    marker_filter: str | None = None,
+    event_id_min: OptInt = None,
+    event_id_max: OptInt = None,
+    event_ids: OptIntList = None,
+    compiler: Literal["mali", "adreno"] = "mali",
+    gpu: str | None = None,
+    fold_uniforms: bool = True,
+    top_n: LInt = 10,
+) -> dict:
+    """
+    Overdraw per render target, split by how each draw is rendered: opaque, late-Z opaque
+    (pixel shader discards / writes depth, so early-Z cannot reject it) and transparent (blend on).
+
+    Findings:
+    - opaque_overdraw: many opaque pixels are drawn and then hidden (needs front-to-back sort / pre-Z)
+    - late_z_waste: hidden pixels of late-Z draws still run the shader; reports the wasted cycles
+    - transparent_layers: average blended layers per target pixel
+    - draw_order: opaque draws issued after a transparent draw in the same target
+    Uses the depth-test overlay on the replay device (use remote replay for mobile captures) and the
+    offline compiler for the late-Z flags (Mali only; Adreno draws count as opaque).
+    """
+    selection = _selection(event_ids, marker_filter, event_id_min, event_id_max)
+    params = dict(selection, with_state=True)
+    coverage = bridge.call("get_draw_coverage", params, timeout=_LONG_TIMEOUT)
+    data, reports = _shader_cost(selection, "pixel", compiler, gpu, fold_uniforms, None)
+    return _overdraw_result(coverage, data, reports, compiler, gpu, int(top_n))
+
+
+def _overdraw_result(coverage: dict, data: dict, reports: dict, compiler: str, gpu: str | None, top_n: int) -> dict:
+    ps_info = {}
+    for d in data["draws"]:
+        sid = d.get("source_id")
+        report_ = reports.get(sid) if sid else None
+        late_z = None
+        if report_ and ("uses_late_zs_update" in report_ or "modifies_coverage" in report_):
+            late_z = bool(report_.get("uses_late_zs_update") or report_.get("modifies_coverage"))
+        ps_info[d["event_id"]] = {"cost": _report_cost(report_) if report_ else None, "late_z": late_z}
+    result = draw_analysis.overdraw(coverage["draws"], ps_info, top_n)
+    _, default_gpu, _, _ = _compiler(compiler)
+    result.update({"compiler": compiler, "gpu": gpu or default_gpu})
+    return result
 
 
 @mcp.tool
@@ -795,6 +930,42 @@ def get_renderpass_list(
     Each pass includes event range, draw count, and color/depth attachments.
     """
     return bridge.call("get_renderpass_list", {"sort_by": sort_by}, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
+def analyze_pass_bandwidth(
+    top_n: LInt = 30,
+    sort_by: Literal["bytes", "index"] = "bytes",
+) -> dict:
+    """
+    Attachment load/store traffic per tile pass (Mali / Adreno / any TBDR GPU).
+
+    A tile GPU loads a framebuffer's attachments from memory when a pass starts
+    (unless they are cleared / invalidated first) and stores them when it ends
+    (unless invalidated). This is the bandwidth cost of the pass, independent of
+    shader cost. Driven by the recorded GL calls (glBindFramebuffer, glClear*,
+    glInvalidateFramebuffer, glBlitFramebuffer/glReadPixels, ...); OpenGL ES only
+    for now (Vulkan loadOp/storeOp is not implemented).
+
+    Returns total traffic (load / store / wasted store MB, GB/s at 60 fps), a
+    severity-sorted issue list and the heaviest passes with per-attachment
+    decisions. Issue types:
+    - wasted_store: written back to memory but never read again (depth is the usual one)
+    - load_without_clear: loaded at pass start although nothing wrote it this frame
+    - render_target_reopened: same target rendered, left, and rendered again (extra load+store)
+    - flush_by_readback: blit / copy / readpixels on the active target forces a tile flush
+    - msaa_stored: multisampled buffer kept in memory instead of resolved in-tile
+    - glFinish: pipeline stall
+    Numbers are an upper bound (whole attachments, no framebuffer compression), good for
+    ranking passes and for before/after comparison, not for absolute GB/s.
+
+    Args:
+        top_n: how many passes to return in detail
+        sort_by: "bytes" (load+store, heaviest first) or "index" (frame order)
+    """
+    return bridge.call(
+        "analyze_pass_bandwidth", {"top_n": top_n, "sort_by": sort_by}, timeout=_LONG_TIMEOUT
+    )
 
 
 @mcp.tool
@@ -1226,6 +1397,220 @@ def get_cached_message(
     return result_cache.query_cached_message(message_id, page, page_size, collection, search)
 
 
+# ==================== Before / after comparison ====================
+
+
+def _instancing_overall(actions: list) -> dict:
+    draws, stack = [], list(actions)
+    while stack:
+        a = stack.pop()
+        stack.extend(a.get("children") or [])
+        if "Drawcall" in a.get("flags", []):
+            draws.append(a)
+    instanced = sum(1 for a in draws if a.get("num_instances", 0) > 1)
+    return {"overall": {
+        "total_draws": len(draws),
+        "instanced_draws": instanced,
+        "instancing_ratio": round(instanced / len(draws), 4) if draws else 0,
+        "total_indices_submitted": sum(a.get("num_indices", 0) * max(1, a.get("num_instances", 0)) for a in draws),
+    }}
+
+
+def _collect_snapshot(name: str, include_shading_cost: bool, compiler: str, gpu: str | None,
+                      include_draw_analysis: bool = False) -> dict:
+    """Run the analysis tools on the loaded capture and condense them into a snapshot"""
+    status = bridge.call("get_capture_status")
+    summary = bridge.call("get_frame_summary")
+    draws = summary.get("statistics", {}).get("draw_calls") or 200
+    pass_list = bridge.call("get_renderpass_list", {"sort_by": "index"}, timeout=_LONG_TIMEOUT)
+    # Instancing totals from the plain draw list. stat_instancing_efficiency (same numbers) walks the action
+    # tree itself and access-violated qrenderdoc in its walk 3 times in a row on freshly loaded captures.
+    draw_list = bridge.call(
+        "get_draw_calls",
+        {"include_children": True, "only_actions": True, "flags_filter": ["Drawcall"]},
+        timeout=_LONG_TIMEOUT,
+    )
+    instancing = _instancing_overall(draw_list.get("actions", []))
+    state = bridge.call("analyze_state_changes", {"max_draws": int(draws)}, timeout=_LONG_TIMEOUT)
+    textures = bridge.call("list_frame_textures", {"sort_by": "size", "top_n": 1}, timeout=_LONG_TIMEOUT)
+    risks = bridge.call("diagnose_mobile_risks", {"severity_filter": "all"}, timeout=_LONG_TIMEOUT)
+    bandwidth = bridge.call("analyze_pass_bandwidth", {"top_n": 1000, "sort_by": "index"}, timeout=_LONG_TIMEOUT)
+    shading = geometry = over = tex_bw = None
+    warnings = []
+    _, default_gpu, _, _ = _compiler(compiler)
+    gpu = gpu or default_gpu
+    if include_shading_cost or include_draw_analysis:
+        try:
+            # one coverage pass and one pixel-source pass feed shading and overdraw; vertex sources feed geometry
+            coverage = bridge.call(
+                "get_draw_coverage", {"with_state": True, "with_textures": include_draw_analysis}, timeout=_LONG_TIMEOUT)
+            pixel_data, pixel_reports = _shader_cost({}, "pixel", compiler, gpu, True, None)
+            shading = _shading_result(coverage, pixel_data, pixel_reports, compiler, gpu, 200)
+            if include_draw_analysis:
+                over = _overdraw_result(coverage, pixel_data, pixel_reports, compiler, gpu, 10)
+                vertex_data, vertex_reports = _shader_cost({}, "vertex", compiler, gpu, True, None)
+                geometry = _geometry_result(coverage, vertex_data, vertex_reports, compiler, gpu, 10)
+                tex_list = bridge.call("list_frame_textures", {"sort_by": "size", "top_n": 100000}, timeout=_LONG_TIMEOUT)
+                tex_bw = texture_analysis.texture_footprint(tex_list["textures"], coverage["draws"], 10)
+            if not include_shading_cost:
+                shading = None
+        except Exception as e:  # missing malioc/aoc must not lose the rest of the snapshot
+            warnings.append("shading / draw analysis skipped: %s" % e)
+    snap = compare.build_snapshot(
+        name, status, summary, pass_list, instancing, state, textures, risks, bandwidth, shading, geometry, over, tex_bw,
+    )
+    if warnings:
+        snap["warnings"] = warnings
+    return snap
+
+
+def _snapshot_brief(snap: dict, path: str) -> dict:
+    out = {
+        "name": snap["name"], "path": path, "capture": snap["capture"], "frame": snap["frame"],
+        "bandwidth": dict((k, v) for k, v in snap["bandwidth"].items() if k not in ("passes", "issues")),
+    }
+    if snap.get("shading"):
+        out["shading"] = dict((k, v) for k, v in snap["shading"].items() if k != "shaders")
+    if snap.get("warnings"):
+        out["warnings"] = snap["warnings"]
+    return out
+
+
+@mcp.tool
+def snapshot_metrics(
+    name: str,
+    include_shading_cost: bool = True,
+    compiler: Literal["mali", "adreno"] = "mali",
+    gpu: str | None = None,
+    save_dir: str | None = None,
+    include_draw_analysis: bool = False,
+) -> dict:
+    """
+    Condense the currently loaded capture into a metrics snapshot and save it as JSON,
+    so it can be diffed against another capture with diff_snapshots.
+
+    Collects: draw / pass counts, indices submitted, instancing, state changes, texture
+    memory, mobile risks, tile-pass attachment bandwidth (analyze_pass_bandwidth) and,
+    optionally, fragment shading cost per shader (estimate_shading_cost; needs malioc /
+    aoc and, for mobile captures, remote replay). Runs several replay passes: expect
+    minutes on a big capture.
+
+    Args:
+        name: snapshot name; also the file name (<save_dir>/<name>.json)
+        include_shading_cost: skip it for a quick snapshot or when no offline compiler is installed
+        compiler / gpu: forwarded to estimate_shading_cost
+        save_dir: default is <temp>/renderdoc_mcp/snapshots
+        include_draw_analysis: also run estimate_geometry_cost and analyze_overdraw (shares the same
+            replay passes, adds one vertex-shader compile pass); needed for the geometry / overdraw
+            sections of frame_performance_report
+    """
+    snap = _collect_snapshot(name, include_shading_cost, compiler, gpu, include_draw_analysis)
+    path = compare.save_snapshot(snap, save_dir)
+    return _snapshot_brief(snap, path)
+
+
+@mcp.tool
+def frame_performance_report(
+    snapshot: str | None = None,
+    include_shading_cost: bool = True,
+    compiler: Literal["mali", "adreno"] = "mali",
+    gpu: str | None = None,
+    top_actions: LInt = 15,
+    save_dir: str | None = None,
+    include_draw_analysis: bool = True,
+) -> dict:
+    """
+    One-call performance report for the loaded capture: a scorecard per area and a ranked
+    list of concrete actions with evidence (events / markers) and impact.
+
+    Areas: attachment bandwidth (wasted stores, loads without clear, reopened targets,
+    readbacks), fragment shading (heaviest shaders by share of cycles, late-Z, pixels shaded
+    then rejected by depth), submission (draw calls, identical-state runs that could be
+    batched) and mobile risks; with include_draw_analysis also the vertex budget (vertex-heavy
+    passes, micro-triangles) and overdraw (hidden opaque pixels, late-Z waste, blended layers,
+    draw order) and texture sampling footprint (uncompressed / over-sized textures). Built from the same metrics as snapshot_metrics, which it
+    saves, so the run takes minutes on a big capture; pass `snapshot` (a saved name or
+    path) to build the report from an existing snapshot without touching RenderDoc.
+
+    Impact percentages are relative to their own area, so they rank actions inside an area but
+    are not comparable across areas. Cycles and bytes are relative costs, not milliseconds.
+
+    Args:
+        snapshot: name / path of a saved snapshot to report on instead of analysing the loaded capture
+        include_shading_cost / compiler / gpu: as snapshot_metrics
+        include_draw_analysis: add vertex budget (estimate_geometry_cost) and overdraw (analyze_overdraw)
+            findings; a snapshot taken without it simply has no such sections
+        top_actions: how many actions to return (the rest are counted in actions_total)
+    """
+    if snapshot:
+        snap = compare.load_snapshot(snapshot, save_dir)
+    else:
+        status = bridge.call("get_capture_status")
+        name = os.path.splitext(os.path.basename(status.get("filename") or "capture"))[0]
+        snap = _collect_snapshot(name, include_shading_cost, compiler, gpu, include_draw_analysis)
+        compare.save_snapshot(snap, save_dir)
+    return report.build_report(snap, int(top_actions))
+
+
+@mcp.tool
+def diff_snapshots(
+    before: str,
+    after: str,
+    save_dir: str | None = None,
+) -> dict:
+    """
+    Compare two saved snapshots (names from snapshot_metrics, or paths to the JSON files).
+
+    Returns a headline of the biggest improvements and regressions, a metrics table with
+    before / after / delta / verdict (better / worse / same), tile passes whose attachment
+    traffic changed, bandwidth issues resolved / new / persisting, per-shader fragment cost
+    changes, and warnings when the two captures are not like-for-like (different GPU,
+    resolution or API). Shader costs are cycles per pixel, so they stay comparable across
+    different views; pixel and cycle totals depend on the camera.
+    """
+    return compare.diff_snapshots(
+        compare.load_snapshot(before, save_dir), compare.load_snapshot(after, save_dir),
+    )
+
+
+@mcp.tool
+def compare_captures(
+    before_path: str,
+    after_path: str,
+    use_remote: bool | None = None,
+    include_shading_cost: bool = True,
+    compiler: Literal["mali", "adreno"] = "mali",
+    gpu: str | None = None,
+    save_dir: str | None = None,
+    include_draw_analysis: bool = False,
+) -> dict:
+    """
+    Open two captures one after the other, snapshot each and return their diff
+    (open_capture + snapshot_metrics + diff_snapshots in one call).
+
+    Meant for "did this optimisation work": before_path is the capture before the change,
+    after_path the one after. Capture both on the same device, scene and resolution for a
+    like-for-like result; diff warnings list any mismatch. Takes minutes (two loads plus
+    two sets of replay analyses). The snapshots are saved, so diff_snapshots can be re-run
+    later without reopening the captures. The "after" capture is left loaded.
+    """
+    def stem(path: str) -> str:
+        return os.path.splitext(os.path.basename(path))[0]
+
+    name_a, name_b = stem(before_path), stem(after_path)
+    if name_a == name_b:
+        name_a, name_b = name_a + "_before", name_b + "_after"
+
+    snaps = []
+    for name, path in ((name_a, before_path), (name_b, after_path)):
+        _open_capture(path, use_remote, _COMPARE_SETTLE)
+        snaps.append(_collect_snapshot(name, include_shading_cost, compiler, gpu, include_draw_analysis))
+    paths = [compare.save_snapshot(snap, save_dir) for snap in snaps]
+    result = compare.diff_snapshots(snaps[0], snaps[1])
+    result["snapshot_paths"] = paths
+    return result
+
+
 # ==================== Analysis prompts ====================
 
 
@@ -1265,8 +1650,13 @@ def analyze_performance() -> str:
     """Performance workflow: rank passes and shaders, then mobile risks."""
     return """分析这一帧的性能问题：
 
+0. 先试 `frame_performance_report` — 一次给出记分卡和按影响排序的优化项（带宽 / 着色 / 提交 / 风险），
+   已有快照时传 snapshot=名字 即可秒出。下面的步骤用于深挖报告里点名的 event / Pass。
 1. `get_replay_context` + `get_frame_summary` — 确认回放设备和帧规模。
 2. `get_renderpass_list(sort_by="draw_count")` — DC 最多的 Pass。
+1b. 做完优化后：`compare_captures(before_path, after_path)` 验证效果，先看 headline 和 shading.total_shader_cost_delta。
+2a. `estimate_geometry_cost` — 顶点/三角形预算和微小三角形；`analyze_overdraw` — 不透明被遮挡、late-Z 浪费、透明层数、绘制顺序。
+2b. 移动端：`analyze_pass_bandwidth` — 附件 Load/Store 带宽，先处理 high 级问题（多余的 Store、被打断重开的 RT、没 clear 的 Load）。
 3. 移动端（Mali/Adreno/PowerVR）：
    - 不要用 `get_action_timings` 排热点（tile flush 会把时间撑大）。
    - `estimate_shading_cost` 按「像素 × malioc 周期」排序。

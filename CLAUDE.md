@@ -63,6 +63,12 @@ RenderDocMCP/
 | `get_api_calls` | 生の API 呼び出しとパラメータ（event_id か start/end_event、name_filter） |
 | `find_pixels` | チャンネル条件に合うピクセルを探す（グリッドサンプリング、バウンディングボックス付き） |
 | `get_cached_message` | 大きすぎて自動キャッシュされた結果のページング/検索 |
+| （实现说明）`analyze_state_changes` / `diagnose_mobile_risks` | GL 下不再逐 DC 回放：`services/gl_stream.py` 读调用流，`services/gl_state.py` 跟踪 glEnable/glBlendFunc/glUseProgram 等还原每个 DC 的状态；discard 检测按 program 缓存。839 DC 的帧 118s→0.2s、115s→13s，结果与回放路径一致。非 GL 仍走回放 |
+| `analyze_pass_bandwidth` | 按 FBO 切 tile pass，估算附件 Load/Store 带宽并给出 wasted_store / load_without_clear / render_target_reopened / flush_by_readback / msaa_stored 等问题（仅 OpenGL ES，Vulkan 待做） |
+| `estimate_texture_bandwidth` | 贴图采样足迹（`mcp_server/texture_analysis.py`，数据来自 `get_draw_coverage(with_textures=True)` + `list_frame_textures`）；上限估算，每像素最多取一个 texel，不含缓存/各向异性 |
+| `estimate_geometry_cost` / `analyze_overdraw` | 顶点预算与过度绘制分析（`mcp_server/draw_analysis.py`，数据来自 `get_draw_coverage(with_state=True)` + malioc 顶点/像素周期）。覆盖像素/三角形数含背面剔除，阈值已补偿 |
+| `frame_performance_report` | 基于快照生成记分卡 + 排序后的优化项（`mcp_server/report.py`）。百分比只在各自领域内可比（带宽占比 / 着色周期占比 / DC 占比），阈值是经验值，不是实测 |
+| `snapshot_metrics` / `diff_snapshots` / `compare_captures` | 指标快照与前后对比。shader 用源码 hash 匹配，着色成本差拆成 shader_cost_delta 与 coverage_delta；compare 每次加载后等 60s（`RENDERDOC_MCP_COMPARE_SETTLE`）再取快照 |
 | `stat_instancing_efficiency` | フレーム全体のインスタンシング統計（pass 別、無駄なインスタンス DC 数） |
 
 ### get_draw_calls フィルタリングオプション

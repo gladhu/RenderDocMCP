@@ -119,6 +119,14 @@ uv tool update-shell  # 添加到 PATH
 | `get_frame_summary` | 帧统计：API、DC/Dispatch/Clear/Copy/Present/marker 数量、顶层 marker、资源数 |
 | `get_renderpass_list` | 划分 RenderPass（PassBoundary → 直接子 DC 的 marker，子 marker 单独成 Pass → RT 切换） |
 | `get_pass_detail` | 指定 Pass 内的 DC 列表和附件 |
+| `estimate_texture_bandwidth` | 贴图采样足迹：每张贴图 min(贴图大小, 采样像素数×每 texel 字节) 的上限，找出未压缩的大贴图、利用率很低的大贴图（忽略图集）、被整张读取的 RT。不是实测带宽（不含缓存/过滤） |
+| `estimate_geometry_cost` | 顶点/三角形预算：按 marker 完整路径、顶点 shader、DC 汇总，附 VS 编译周期；标出顶点占比过高的 pass 和微小三角形（<4 px/三角形）。需要真机回放 |
+| `analyze_overdraw` | 按渲染目标拆分不透明 / late-Z / 透明：不透明被遮挡比例及贡献最大的 DC、late-Z 浪费的片元周期、透明平均层数、不透明 DC 排在透明之后。「混合开启但 ONE/ZERO」按不透明处理 |
+| `frame_performance_report` | 一次调用出性能报告：各领域记分卡（带宽/着色/几何/过度绘制/提交/风险；`include_draw_analysis=True` 默认开启，约 8 分钟/帧）+ 按影响排序的优化项（带 event/marker 证据）；传 `snapshot=` 可基于已存快照秒出 |
+| `snapshot_metrics` | 把当前抓帧浓缩成指标快照（DC/状态切换/贴图内存/带宽/shader 着色成本/风险）并存成 JSON |
+| `diff_snapshots` | 对比两份快照：指标表(better/worse/same)、带宽问题 解决/新增/持续、按 shader 拆分「shader 本身变化」和「镜头覆盖变化」 |
+| `compare_captures` | 依次打开两个 rdc，各取快照并对比（优化前后验证一步到位，约 10 分钟/抓帧） |
+| `analyze_pass_bandwidth` | 每个 tile pass 的附件 Load/Store 带宽（clear/invalidate 是否跳过、Store 后是否还有人读、RT 被打断重开、blit/readback 强制 flush），输出严重度排序的问题列表。目前仅 OpenGL ES |
 | `get_draw_call_details` | 单个 DC 的顶点数、输出等详情 |
 | `find_draws_by_shader` | 按 shader 名（部分匹配）反查 DC，可限定 stage |
 | `find_draws_by_texture` | 按贴图名（部分匹配）反查 DC，搜索 SRV / UAV / RT |
