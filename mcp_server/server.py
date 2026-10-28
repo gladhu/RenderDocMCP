@@ -10,6 +10,7 @@ from fastmcp import FastMCP
 
 from .bridge.client import RenderDocBridge, RenderDocBridgeError
 from .config import settings
+from . import result_cache
 from .params import (
     LInt, OptInt, OptIntList, ReqInt, StageOpt, StageReq, StageVP, StageVPCOpt,
 )
@@ -18,6 +19,8 @@ from .params import (
 mcp = FastMCP(
     name="RenderDoc MCP Server",
 )
+# Results over RENDERDOC_MCP_MAX_RESPONSE_CHARS are cached and returned as a message_id
+mcp.add_middleware(result_cache.ResultCacheMiddleware())
 
 # RenderDoc bridge client
 bridge = RenderDocBridge(host=settings.renderdoc_host, port=settings.renderdoc_port)
@@ -1039,6 +1042,37 @@ def export_mesh(event_id: ReqInt, output_path: str) -> dict:
         {"event_id": event_id, "output_path": output_path},
         timeout=_LONG_TIMEOUT,
     )
+
+
+@mcp.tool
+def get_cached_message(
+    message_id: str,
+    page: LInt = 1,
+    page_size: LInt = 50,
+    collection: str | None = None,
+    search: str | None = None,
+) -> dict:
+    """
+    Read a tool result that was too large to return directly.
+
+    Any tool whose result exceeds the size limit (default 20000 chars, env
+    RENDERDOC_MCP_MAX_RESPONSE_CHARS) returns {"status": "cached", "message_id": ...}
+    with the size of each list in the result and a short preview. Use this tool
+    to page through it or search it instead of re-running the original tool.
+
+    Args:
+        message_id: The id from the "cached" response
+        page / page_size: 1-based page and items per page (max 200)
+        collection: Which list to page when the result has several (default: the largest)
+        search: Case-insensitive substring; only items containing it are returned
+    The cache lives in the MCP server process (last 64 results); an evicted or
+    restarted-away id has to be re-fetched by re-running the original tool.
+    """
+    if collection is not None and not collection.strip():
+        collection = None
+    if search is not None and not search.strip():
+        search = None
+    return result_cache.query_cached_message(message_id, page, page_size, collection, search)
 
 
 # ==================== Analysis prompts ====================
