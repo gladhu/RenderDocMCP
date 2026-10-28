@@ -464,11 +464,13 @@ class ActionService:
                 def walk(actions):
                     for a in actions:
                         # an action's events precede it, so its range is (previous action .. its own id]
-                        if a.eventId >= lo:
+                        a_eid = int(a.eventId)          # read before descending, not after
+                        children = a.children
+                        if a_eid >= lo:
                             take(a)
-                        if a.children:
-                            walk(a.children)
-                        if a.eventId > hi:
+                        if children:
+                            walk(children)
+                        if a_eid > hi:
                             return
 
                 walk(controller.GetRootActions())

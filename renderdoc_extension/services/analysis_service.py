@@ -9,6 +9,7 @@ and pixel reads are executed by the device GPU, not the local PC.
 import math
 import os
 import struct
+import time
 
 import hashlib
 
@@ -41,12 +42,16 @@ class AnalysisService:
 
         def walk(actions, path):
             for action in actions:
+                # Read what is needed before descending: reading an action after the recursion
+                # returned access-violated qrenderdoc's replay thread (see stat_instancing_efficiency).
                 name = action.GetName(sf)
-                if action.children:
-                    walk(action.children, path + [name])
-                if not (action.flags & rd.ActionFlags.Drawcall):
-                    continue
+                children = action.children
+                is_draw = bool(action.flags & rd.ActionFlags.Drawcall)
                 eid = action.eventId
+                if children:
+                    walk(children, path + [name])
+                if not is_draw:
+                    continue
                 if wanted is not None and eid not in wanted:
                     continue
                 if event_id_min is not None and eid < event_id_min:
@@ -141,13 +146,18 @@ class AnalysisService:
             tex_size = {}
             for tex in controller.GetTextures():
                 tex_size[str(tex.resourceId)] = [int(tex.width), int(tex.height)]
+            timing = dict.fromkeys(("set_event", "pipeline", "overlay", "histogram", "reflect"), 0.0)
+            t_start = time.time()
             try:
                 for action, path in draws:
                     target = self._first_output(action)
                     if target is None:
                         continue
+                    t0 = time.time()
                     controller.SetFrameEvent(action.eventId, True)
+                    t1 = time.time()
                     pipe = controller.GetPipelineState()
+                    t2 = time.time()
 
                     disp = rd.TextureDisplay()
                     disp.resourceId = target
@@ -155,12 +165,18 @@ class AnalysisService:
                     output.SetTextureDisplay(disp)
                     output.Display()
                     overlay = output.GetDebugOverlayTexID()
+                    t3 = time.time()
 
                     # Depth overlay: passed = green (0,1,0,1), failed = red (1,0,0,1)
                     green = controller.GetHistogram(overlay, sub, rd.CompType.Typeless, 0.0, 1.0,
                                                     (False, True, False, False))
                     red = controller.GetHistogram(overlay, sub, rd.CompType.Typeless, 0.0, 1.0,
                                                   (True, False, False, False))
+                    t4 = time.time()
+                    timing["set_event"] += t1 - t0
+                    timing["pipeline"] += t2 - t1
+                    timing["overlay"] += t3 - t2
+                    timing["histogram"] += t4 - t3
                     entry = {
                         "event_id": action.eventId,
                         "marker": path,
@@ -183,10 +199,13 @@ class AnalysisService:
                         gl_draw = tracked.get(int(action.eventId))
                         entry.update(draw_state(gl_draw) if gl_draw else _draw_state(controller, pipe))
                     entries.append(entry)
+                    timing["reflect"] += time.time() - t4
             finally:
                 output.Shutdown()
 
+            timing["total"] = time.time() - t_start
             result["data"] = {
+                "timing_s": dict((k, round(v, 2)) for k, v in timing.items()),
                 "draw_count": len(entries),
                 "total_passed": sum(e["passed"] for e in entries),
                 "total_failed": sum(e["failed"] for e in entries),
@@ -362,23 +381,33 @@ class AnalysisService:
             sources = {}
             entries = []
             raw_cache = {}
+            timing = dict.fromkeys(("set_event", "pipeline", "source", "fold", "textures"), 0.0)
+            t_start = time.time()
             for action, path in draws:
+                t0 = time.time()
                 controller.SetFrameEvent(action.eventId, True)
+                t1 = time.time()
                 pipe = controller.GetPipelineState()
+                timing["set_event"] += t1 - t0
+                timing["pipeline"] += time.time() - t1
                 shader = pipe.GetShader(stage_enum)
                 if shader == rd.ResourceId.Null():
                     continue
                 refl = pipe.GetShaderReflection(stage_enum)
                 key = str(shader)
+                t_src = time.time()
                 if key not in raw_cache:
                     raw_cache[key] = self._shader_source(controller, refl)
                 kind, text = raw_cache[key]
+                timing["source"] += time.time() - t_src
                 digest = None if text is None else hashlib.md5(text.encode("utf-8", "replace")).hexdigest()[:12]
                 if text is None:
                     entries.append({"event_id": action.eventId, "shader": key, "error": "source unavailable (only GLSL is supported)"})
                     continue
 
+                t_fold = time.time()
                 defines = self._fold_defines(controller, pipe, refl, stage_enum, blocks) if fold_uniforms else {}
+                timing["fold"] += time.time() - t_fold
                 if overrides:
                     defines.update(overrides)
                 final = text
@@ -399,7 +428,9 @@ class AnalysisService:
                     "folded_uniforms": len(defines),
                     "textures": self._texture_names(controller, pipe),
                 })
+            timing["total"] = time.time() - t_start
             result["data"] = {
+                "timing_s": dict((k, round(v, 2)) for k, v in timing.items()),
                 "stage": stage,
                 "language": "glsl",
                 "unique_sources": len(sources),

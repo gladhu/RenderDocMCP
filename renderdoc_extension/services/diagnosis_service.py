@@ -191,11 +191,14 @@ class DiagnosisService:
 
             def walk(actions, path):
                 for action in actions:
+                    # read before descending (see ActionService.stat_instancing_efficiency)
                     name = action.GetName(sf)
-                    child_path = path + [name] if action.children else path
-                    if action.children:
-                        walk(action.children, child_path)
-                    if not (action.flags & rd.ActionFlags.Drawcall):
+                    children = action.children
+                    is_draw = bool(action.flags & rd.ActionFlags.Drawcall)
+                    child_path = path + [name] if children else path
+                    if children:
+                        walk(children, child_path)
+                    if not is_draw:
                         continue
                     if marker_filter and not any(marker_filter in p for p in child_path + [name]):
                         continue
