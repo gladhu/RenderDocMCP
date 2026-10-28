@@ -7,6 +7,7 @@ import re
 
 import renderdoc as rd
 
+from .draw_targets import vulkan_passes
 from ..utils import Parsers, Helpers
 
 
@@ -232,6 +233,10 @@ class ResourceService:
                             rt_ids.add(str(o))
                     if action.depthOut != rd.ResourceId.Null():
                         rt_ids.add(str(action.depthOut))
+            # Vulkan draw actions carry no outputs: every image attached to a render pass is a render target
+            api_name = Helpers.enum_name("GraphicsAPI", Helpers.api_props(controller).pipelineType)
+            for p in vulkan_passes(self.ctx, controller, api_name):
+                rt_ids.update(a["resource_id"] for a in p["attachments"])
 
             rows = []
             for tex in controller.GetTextures():

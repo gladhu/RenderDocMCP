@@ -11,6 +11,7 @@ Resolution order:
 
 import renderdoc as rd
 
+from .draw_targets import vulkan_passes
 from ..utils import Helpers
 
 
@@ -113,7 +114,41 @@ def _draw_actions(actions):
     return [a for a in actions if a.flags & rd.ActionFlags.Drawcall]
 
 
+def _vulkan_passes(controller, ctx):
+    """Vulkan: a pass is a render pass (vkCmdBeginRenderPass .. vkCmdEndRenderPass); its attachments and
+    load / store ops are declared there, and the draw actions themselves carry no targets."""
+    api = Helpers.enum_name("GraphicsAPI", Helpers.api_props(controller).pipelineType)
+    passes = []
+    for p in vulkan_passes(ctx, controller, api):
+        colors = [a for a in p["attachments"] if a["role"].startswith("color")]
+        depth = next((a for a in p["attachments"] if a["role"] == "depth"), None)
+
+        def info(a):
+            return {"resource_id": a["resource_id"], "name": a["name"], "width": a["width"],
+                    "height": a["height"], "format": a["format"], "samples": a["samples"],
+                    "load": "load" if a["load"]["needed"] else a["load"]["skipped_by"],
+                    "store": "store" if a["store"]["needed"] else a["store"]["skipped_by"]}
+
+        draws = p["draw_eids"]
+        passes.append({
+            "index": p["index"],
+            "name": "%s [render pass @%d]" % (p["marker"] or "RenderPass", p["begin"]),
+            "synthetic": False,
+            "source": "vulkan_render_pass",
+            "_event_ids": set(draws),
+            "event_id_begin": p["begin"],
+            "event_id_end": p["end"],
+            "first_draw_event_id": draws[0] if draws else None,
+            "draw_count": len(draws),
+            "color_targets": [info(a) for a in colors],
+            "depth_target": info(depth) if depth else None,
+        })
+    return passes
+
+
 def _enumerate_passes(controller, ctx):
+    if Helpers.enum_name("GraphicsAPI", Helpers.api_props(controller).pipelineType) == "Vulkan":
+        return _vulkan_passes(controller, ctx)
     sf = controller.GetStructuredFile()
     actions = Helpers.flatten_actions(controller.GetRootActions())
     ranges = _from_pass_flags(actions, sf)
