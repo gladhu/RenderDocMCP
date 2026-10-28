@@ -12,7 +12,8 @@ from typing import Any
 
 
 # IPC directory (must match renderdoc_extension/socket_server.py)
-IPC_DIR = os.path.join(tempfile.gettempdir(), "renderdoc_mcp")
+# RENDERDOC_MCP_IPC_DIR lets a second RenderDoc instance (e.g. an elevated one) use its own channel
+IPC_DIR = os.environ.get("RENDERDOC_MCP_IPC_DIR") or os.path.join(tempfile.gettempdir(), "renderdoc_mcp")
 REQUEST_FILE = os.path.join(IPC_DIR, "request.json")
 RESPONSE_FILE = os.path.join(IPC_DIR, "response.json")
 LOCK_FILE = os.path.join(IPC_DIR, "lock")
