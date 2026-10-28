@@ -197,10 +197,10 @@ class RenderDocFacade:
     # ==================== Analysis Operations ====================
 
     def get_draw_coverage(self, event_ids=None, marker_filter=None, event_id_min=None, event_id_max=None,
-                          with_state=False, with_textures=False):
+                          with_state=False, with_textures=False, with_sources=None):
         """Per-draw depth-test pixel coverage"""
         return self._analysis.get_draw_coverage(event_ids, marker_filter, event_id_min, event_id_max,
-                                                with_state, with_textures)
+                                                with_state, with_textures, with_sources)
 
     def get_shader_usage(self, marker_filter=None, event_id_min=None, event_id_max=None):
         """Group draw calls by pixel shader"""

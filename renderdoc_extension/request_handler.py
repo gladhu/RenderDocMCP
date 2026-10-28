@@ -238,6 +238,7 @@ class RequestHandler:
             event_id_max=params.get("event_id_max"),
             with_state=bool(params.get("with_state", False)),
             with_textures=bool(params.get("with_textures", False)),
+            with_sources=params.get("with_sources"),
         )
 
     def _handle_get_shader_usage(self, params):

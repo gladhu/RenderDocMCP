@@ -573,13 +573,17 @@ def _report_cost(report: dict | None) -> float | None:
 
 def _shader_cost(selection: dict[str, object], stage: str, compiler: str, gpu: str | None,
                  fold_uniforms: bool, overrides: dict[str, str] | None) -> tuple[dict, dict]:
-    module, default_gpu, _, _ = _compiler(compiler)
     params = dict(selection, stage=stage, fold_uniforms=fold_uniforms)
     if overrides:
         params["overrides"] = overrides
     data = bridge.call("get_shader_sources", params, timeout=_LONG_TIMEOUT)
-    reports = module.analyze_many(data["sources"], stage, gpu or default_gpu)
-    return data, reports
+    return data, _compile_sources(data, stage, compiler, gpu)
+
+
+def _compile_sources(data: dict, stage: str, compiler: str, gpu: str | None) -> dict:
+    """Offline-compile the sources of one get_shader_sources result"""
+    module, default_gpu, _, _ = _compiler(compiler)
+    return module.analyze_many(data["sources"], stage, gpu or default_gpu)
 
 
 @mcp.tool
@@ -1419,13 +1423,21 @@ def _collect_snapshot(name: str, include_shading_cost: bool, compiler: str, gpu:
     if include_shading_cost or include_draw_analysis:
         try:
             # one coverage pass and one pixel-source pass feed shading and overdraw; vertex sources feed geometry
+            # ONE replay pass yields coverage, state, textures and the pixel (and vertex) sources:
+            # a SetFrameEvent per draw is ~95% of every per-draw analysis, so separate calls triple the cost
+            stages = ["pixel", "vertex"] if include_draw_analysis else ["pixel"]
             coverage = bridge.call(
-                "get_draw_coverage", {"with_state": True, "with_textures": include_draw_analysis}, timeout=_LONG_TIMEOUT)
-            pixel_data, pixel_reports = _shader_cost({}, "pixel", compiler, gpu, True, None)
+                "get_draw_coverage",
+                {"with_state": True, "with_textures": include_draw_analysis,
+                 "with_sources": {"stages": stages, "fold_uniforms": True}},
+                timeout=_LONG_TIMEOUT)
+            pixel_data = coverage["sources"]["pixel"]
+            pixel_reports = _compile_sources(pixel_data, "pixel", compiler, gpu)
             shading = _shading_result(coverage, pixel_data, pixel_reports, compiler, gpu, 200)
             if include_draw_analysis:
                 over = _overdraw_result(coverage, pixel_data, pixel_reports, compiler, gpu, 10)
-                vertex_data, vertex_reports = _shader_cost({}, "vertex", compiler, gpu, True, None)
+                vertex_data = coverage["sources"]["vertex"]
+                vertex_reports = _compile_sources(vertex_data, "vertex", compiler, gpu)
                 geometry = _geometry_result(coverage, vertex_data, vertex_reports, compiler, gpu, 10)
                 tex_list = bridge.call("list_frame_textures", {"sort_by": "size", "top_n": 100000}, timeout=_LONG_TIMEOUT)
                 tex_bw = texture_analysis.texture_footprint(tex_list["textures"], coverage["draws"], 10)

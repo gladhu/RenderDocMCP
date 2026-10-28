@@ -25,6 +25,74 @@ from ..utils import Helpers, Parsers
 DEFAULT_FOLD_BLOCKS = ["UnityPerMaterial"]
 
 
+class _SourceCollector(object):
+    """Accumulates get_shader_sources' per-draw entries for one stage while draws are replayed"""
+
+    def __init__(self, service, stage, stage_enum, blocks, fold_uniforms, overrides):
+        self.service = service
+        self.stage = stage
+        self.stage_enum = stage_enum
+        self.blocks = blocks
+        self.fold_uniforms = fold_uniforms
+        self.overrides = overrides
+        self.sources = {}
+        self.entries = []
+        self.raw_cache = {}
+        self.timing = dict.fromkeys(("source", "fold"), 0.0)
+
+    def add(self, controller, pipe, action, path):
+        shader = pipe.GetShader(self.stage_enum)
+        if shader == rd.ResourceId.Null():
+            return
+        refl = pipe.GetShaderReflection(self.stage_enum)
+        key = str(shader)
+        t0 = time.time()
+        if key not in self.raw_cache:
+            self.raw_cache[key] = self.service._shader_source(controller, refl)
+        kind, text = self.raw_cache[key]
+        self.timing["source"] += time.time() - t0
+        if text is None:
+            self.entries.append({"event_id": action.eventId, "shader": key,
+                                 "error": "source unavailable (only GLSL is supported)"})
+            return
+        digest = hashlib.md5(text.encode("utf-8", "replace")).hexdigest()[:12]
+
+        t1 = time.time()
+        defines = self.service._fold_defines(controller, pipe, refl, self.stage_enum, self.blocks)             if self.fold_uniforms else {}
+        self.timing["fold"] += time.time() - t1
+        if self.overrides:
+            defines.update(self.overrides)
+        final = text
+        if defines:
+            pos = text.find("void main(")
+            if pos < 0:
+                pos = len(text)
+            block = "".join("#define %s %s\n" % (k, v) for k, v in sorted(defines.items()))
+            final = text[:pos] + block + text[pos:]
+        source_id = "%s#%x" % (key, hash(final) & 0xFFFFFFFFFFFF)
+        self.sources[source_id] = final
+        self.entries.append({
+            "event_id": action.eventId,
+            "marker": path,
+            "shader": key,
+            "shader_hash": digest,       # content hash: stable across captures, unlike ResourceIds
+            "source_id": source_id,
+            "folded_uniforms": len(defines),
+            "textures": self.service._texture_names(controller, pipe),
+        })
+
+    def result(self, set_event, total):
+        timing = dict(self.timing, set_event=set_event, total=total)
+        return {
+            "timing_s": dict((k, round(v, 2)) for k, v in timing.items()),
+            "stage": self.stage,
+            "language": "glsl",
+            "unique_sources": len(self.sources),
+            "sources": self.sources,
+            "draws": self.entries,
+        }
+
+
 class AnalysisService:
     """Performance analysis service (coverage, shader sources, texture export)"""
 
@@ -112,7 +180,7 @@ class AnalysisService:
     # ==================== Coverage ====================
 
     def get_draw_coverage(self, event_ids=None, marker_filter=None, event_id_min=None, event_id_max=None,
-                          with_state=False, with_textures=False):
+                          with_state=False, with_textures=False, with_sources=None):
         """
         Per-draw pixel coverage measured with RenderDoc's depth-test overlay.
         passed = pixels that passed the depth test (shaded), failed = covered but occluded.
@@ -121,7 +189,10 @@ class AnalysisService:
         Each entry also carries the draw's geometry (num_indices, num_instances, topology) and the
         size of its render target. with_state adds blend_enabled / depth_test / depth_write read from
         the pipeline (slower: one more state read per draw). with_textures adds sampled_textures, the
-        resource ids of all textures bound to the pixel shader.
+        resource ids of all textures bound to the pixel shader. with_sources={"stages": [...],
+        "fold_uniforms": bool} also collects get_shader_sources' result for those stages in the same
+        replay pass (a SetFrameEvent per draw is ~95% of the cost of every per-draw analysis, so one
+        pass is much cheaper than one call per analysis); returned under "sources" by stage.
         """
         if not self.ctx.IsCaptureLoaded():
             raise ValueError("No capture loaded")
@@ -147,6 +218,11 @@ class AnalysisService:
             for tex in controller.GetTextures():
                 tex_size[str(tex.resourceId)] = [int(tex.width), int(tex.height)]
             timing = dict.fromkeys(("set_event", "pipeline", "overlay", "histogram", "reflect"), 0.0)
+            collectors = {}
+            if with_sources:
+                fold = bool(with_sources.get("fold_uniforms", True))
+                for st in with_sources.get("stages", []):
+                    collectors[st] = _SourceCollector(self, st, Parsers.parse_stage(st), DEFAULT_FOLD_BLOCKS, fold, None)
             t_start = time.time()
             try:
                 for action, path in draws:
@@ -199,6 +275,8 @@ class AnalysisService:
                         gl_draw = tracked.get(int(action.eventId))
                         entry.update(draw_state(gl_draw) if gl_draw else _draw_state(controller, pipe))
                     entries.append(entry)
+                    for st, col in collectors.items():
+                        col.add(controller, pipe, action, path)
                     timing["reflect"] += time.time() - t4
             finally:
                 output.Shutdown()
@@ -206,6 +284,7 @@ class AnalysisService:
             timing["total"] = time.time() - t_start
             result["data"] = {
                 "timing_s": dict((k, round(v, 2)) for k, v in timing.items()),
+                "sources": dict((st, col.result(0.0, 0.0)) for st, col in collectors.items()) if collectors else None,
                 "draw_count": len(entries),
                 "total_passed": sum(e["passed"] for e in entries),
                 "total_failed": sum(e["failed"] for e in entries),
@@ -378,65 +457,15 @@ class AnalysisService:
             if not draws:
                 result["error"] = "No draw calls matched the filter"
                 return
-            sources = {}
-            entries = []
-            raw_cache = {}
-            timing = dict.fromkeys(("set_event", "pipeline", "source", "fold", "textures"), 0.0)
+            collector = _SourceCollector(self, stage, stage_enum, blocks, fold_uniforms, overrides)
             t_start = time.time()
+            set_event = 0.0
             for action, path in draws:
                 t0 = time.time()
                 controller.SetFrameEvent(action.eventId, True)
-                t1 = time.time()
-                pipe = controller.GetPipelineState()
-                timing["set_event"] += t1 - t0
-                timing["pipeline"] += time.time() - t1
-                shader = pipe.GetShader(stage_enum)
-                if shader == rd.ResourceId.Null():
-                    continue
-                refl = pipe.GetShaderReflection(stage_enum)
-                key = str(shader)
-                t_src = time.time()
-                if key not in raw_cache:
-                    raw_cache[key] = self._shader_source(controller, refl)
-                kind, text = raw_cache[key]
-                timing["source"] += time.time() - t_src
-                digest = None if text is None else hashlib.md5(text.encode("utf-8", "replace")).hexdigest()[:12]
-                if text is None:
-                    entries.append({"event_id": action.eventId, "shader": key, "error": "source unavailable (only GLSL is supported)"})
-                    continue
-
-                t_fold = time.time()
-                defines = self._fold_defines(controller, pipe, refl, stage_enum, blocks) if fold_uniforms else {}
-                timing["fold"] += time.time() - t_fold
-                if overrides:
-                    defines.update(overrides)
-                final = text
-                if defines:
-                    pos = text.find("void main(")
-                    if pos < 0:
-                        pos = len(text)
-                    block = "".join("#define %s %s\n" % (k, v) for k, v in sorted(defines.items()))
-                    final = text[:pos] + block + text[pos:]
-                source_id = "%s#%x" % (key, hash(final) & 0xFFFFFFFFFFFF)
-                sources[source_id] = final
-                entries.append({
-                    "event_id": action.eventId,
-                    "marker": path,
-                    "shader": key,
-                    "shader_hash": digest,       # content hash: stable across captures, unlike ResourceIds
-                    "source_id": source_id,
-                    "folded_uniforms": len(defines),
-                    "textures": self._texture_names(controller, pipe),
-                })
-            timing["total"] = time.time() - t_start
-            result["data"] = {
-                "timing_s": dict((k, round(v, 2)) for k, v in timing.items()),
-                "stage": stage,
-                "language": "glsl",
-                "unique_sources": len(sources),
-                "sources": sources,
-                "draws": entries,
-            }
+                set_event += time.time() - t0
+                collector.add(controller, controller.GetPipelineState(), action, path)
+            result["data"] = collector.result(set_event, time.time() - t_start)
 
         self._invoke(callback)
         if result["error"]:
