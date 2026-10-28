@@ -4,6 +4,7 @@ Provides thread-safe access to RenderDoc's ReplayController and CaptureContext.
 Uses BlockInvoke to marshal calls to the replay thread.
 """
 
+from .utils import Helpers
 from .services import (
     CaptureManager,
     ActionService,
@@ -41,6 +42,7 @@ class RenderDocFacade:
         self.ctx = ctx
 
         # Initialize service classes
+        Helpers.ctx = ctx
         self._capture = CaptureManager(ctx, self._invoke)
         self._action = ActionService(ctx, self._invoke)
         self._search = SearchService(ctx, self._invoke)

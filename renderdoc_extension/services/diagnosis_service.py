@@ -8,6 +8,8 @@ import re
 
 import renderdoc as rd
 
+from .gl_state import STATE_CALLS, summarize_state_changes, track_draws
+from .gl_stream import collect_stream
 from ..utils import Helpers
 
 
@@ -38,7 +40,7 @@ class DiagnosisService:
         result = {"data": None}
 
         def callback(controller):
-            props = controller.GetAPIProperties()
+            props = Helpers.api_props(controller)
             api = Helpers.enum_name("GraphicsAPI", props.pipelineType)
             vendor = Helpers.enum_name("GPUVendor", props.vendor)
             try:
@@ -53,6 +55,12 @@ class DiagnosisService:
                 name_of[str(tex.resourceId)] = self.ctx.GetResourceName(tex.resourceId)
 
             actions = Helpers.flatten_actions(controller.GetRootActions())
+            # GL: the bound program of every draw follows from the recorded calls, so the shader is
+            # inspected once per program instead of replaying all draws
+            program_of = {}
+            if api == "OpenGL":
+                program_of = dict((d["eid"], d["program"]) for d in track_draws(collect_stream(controller, STATE_CALLS)))
+            program_has_discard = {}
             rt_counts = {}
             rt_clears = {}
             discard_draws = 0
@@ -66,7 +74,14 @@ class DiagnosisService:
                             if td is not None:
                                 key = (td.width, td.height)
                                 rt_counts[key] = rt_counts.get(key, 0) + 1
-                    if _shader_has_discard(controller, action, sampled_shaders):
+                    program = program_of.get(int(action.eventId))
+                    if program is not None and program in program_has_discard:
+                        has_discard = program_has_discard[program]
+                    else:
+                        has_discard = _shader_has_discard(controller, action, sampled_shaders)
+                        if program is not None:
+                            program_has_discard[program] = has_discard
+                    if has_discard:
                         discard_draws += 1
                 if action.flags & rd.ActionFlags.Clear:
                     for o in action.outputs:
@@ -157,7 +172,20 @@ class DiagnosisService:
             track = valid
         result = {"data": None}
 
+        try:
+            api = Helpers.enum_name("GraphicsAPI", self.ctx.APIProps().pipelineType)
+        except Exception:
+            api = ""
+
         def callback(controller):
+            if api == "OpenGL":
+                # State follows from the recorded calls: no per-draw replay (minutes on a remote device)
+                draws = track_draws(collect_stream(controller, STATE_CALLS))
+                summary = summarize_state_changes(draws, track, marker_filter, max_draws)
+                result["data"] = _state_report(
+                    summary["analyzed_draws"], summary["total_draws"], summary["change_counts"],
+                    summary["unavailable"], summary["runs"], "api_stream")
+                return
             sf = controller.GetStructuredFile()
             draws = []
 
@@ -232,33 +260,37 @@ class DiagnosisService:
             if current and current["count"] >= 2:
                 runs.append(current)
             runs.sort(key=lambda r: -r["count"])
-
-            suggestions = []
-            if change_counts.get("shader", 0) > analyzed // 3:
-                suggestions.append("Shader 切换 %d 次，考虑按 shader 排序合批" % change_counts["shader"])
-            if change_counts.get("render_target", 0) > 5:
-                suggestions.append(
-                    "RT 切换 %d 次，分块 GPU 上每次都可能触发 tile store/load" % change_counts["render_target"]
-                )
-            if runs:
-                best = runs[0]
-                suggestions.append(
-                    "事件 %s–%s 连续 %d 个 DC 状态相同，可考虑 instancing 合并"
-                    % (best["start_event"], best["end_event"], best["count"])
-                )
             unavailable = [name for name in ("shader", "blend", "depth", "cull")
                            if name in track and not saw_value.get(name)]
-            result["data"] = {
-                "analyzed_draws": analyzed,
-                "total_draws": len(draws),
-                "change_counts": change_counts,
-                "unavailable": unavailable,
-                "batching_opportunities": runs[:5],
-                "suggestions": suggestions,
-            }
+            result["data"] = _state_report(analyzed, len(draws), change_counts, unavailable, runs, "replay")
 
         self._invoke(callback)
         return result["data"]
+
+
+def _state_report(analyzed, total, change_counts, unavailable, runs, method):
+    suggestions = []
+    if change_counts.get("shader", 0) > analyzed // 3:
+        suggestions.append("Shader 切换 %d 次，考虑按 shader 排序合批" % change_counts["shader"])
+    if change_counts.get("render_target", 0) > 5:
+        suggestions.append(
+            "RT 切换 %d 次，分块 GPU 上每次都可能触发 tile store/load" % change_counts["render_target"]
+        )
+    if runs:
+        best = runs[0]
+        suggestions.append(
+            "事件 %s–%s 连续 %d 个 DC 状态相同，可考虑 instancing 合并"
+            % (best["start_event"], best["end_event"], best["count"])
+        )
+    return {
+        "analyzed_draws": analyzed,
+        "total_draws": total,
+        "change_counts": change_counts,
+        "unavailable": unavailable,
+        "batching_opportunities": runs[:5],
+        "suggestions": suggestions,
+        "method": method,
+    }
 
 
 def _tex_by_id(textures, rid):

@@ -36,19 +36,16 @@ class CaptureManager:
         recorded = Helpers.recorded_gpu(result.get("filename"))
         result["recorded_gpu"] = recorded
 
-        # Get API type via replay
-        def callback(controller):
-            try:
-                props = controller.GetAPIProperties()
-                result["api"] = Helpers.enum_name("GraphicsAPI", props.pipelineType)
-                result["vendor"] = Helpers.enum_name("GPUVendor", props.vendor)
-                result["known_gpu_quirks"] = Helpers.gpu_quirks(
-                    result["api"], result["vendor"], recorded
-                )
-            except Exception:
-                pass
+        # API type from the UI side (ctx.APIProps). controller.GetAPIProperties() on the replay thread
+        # access-violated qrenderdoc intermittently when it was the first replay call after a load.
+        try:
+            props = self.ctx.APIProps()
+            result["api"] = Helpers.enum_name("GraphicsAPI", props.pipelineType)
+            result["vendor"] = Helpers.enum_name("GPUVendor", props.vendor)
+            result["known_gpu_quirks"] = Helpers.gpu_quirks(result["api"], result["vendor"], recorded)
+        except Exception:
+            pass
 
-        self._invoke(callback)
         return result
 
     def get_replay_context(self):
@@ -86,6 +83,17 @@ class CaptureManager:
                 result["capture_local"] = self.ctx.IsCaptureLocal()
             except Exception:
                 pass
+
+        # UI-side state only (no replay thread access): lets callers tell when the UI has
+        # finished its own initial replay after a load
+        try:
+            result["capture_loading"] = bool(self.ctx.IsCaptureLoading())
+        except Exception:
+            pass
+        try:
+            result["cur_event"] = int(self.ctx.CurEvent())
+        except Exception:
+            pass
 
         return result
 
@@ -273,7 +281,7 @@ class CaptureManager:
             def callback(controller):
                 try:
                     from ..utils import Helpers
-                    props = controller.GetAPIProperties()
+                    props = Helpers.api_props(controller)
                     api_result["api"] = Helpers.enum_name("GraphicsAPI", props.pipelineType)
                     api_result["vendor"] = Helpers.enum_name("GPUVendor", props.vendor)
                 except Exception:

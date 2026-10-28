@@ -51,6 +51,19 @@ _ENUM_TABLES = {
 class Helpers:
     """Common helper functions (static methods)"""
 
+    # Set by the facade. controller.GetAPIProperties() access-violated qrenderdoc intermittently on
+    # freshly loaded captures; the UI-side ctx.APIProps() has not.
+    ctx = None
+
+    @staticmethod
+    def api_props(controller=None):
+        if Helpers.ctx is not None:
+            try:
+                return Helpers.ctx.APIProps()
+            except Exception:
+                pass
+        return controller.GetAPIProperties()
+
     @staticmethod
     def enum_name(enum_key, value):
         """SWIG enums in this RenderDoc build stringify as their integer.
@@ -260,7 +273,7 @@ class Helpers:
 
         # Depth test / write and rasterizer come from the API-specific state.
         try:
-            api = Helpers.enum_name("GraphicsAPI", controller.GetAPIProperties().pipelineType)
+            api = Helpers.enum_name("GraphicsAPI", Helpers.api_props(controller).pipelineType)
             if api in ("D3D11", "D3D12"):
                 state = controller.GetD3D11PipelineState() if api == "D3D11" else controller.GetD3D12PipelineState()
                 ds = state.outputMerger.depthStencilState

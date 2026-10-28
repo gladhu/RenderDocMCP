@@ -80,7 +80,7 @@ class PipelineService:
             controller.SetFrameEvent(event_id, True)
 
             pipe = controller.GetPipelineState()
-            api = controller.GetAPIProperties().pipelineType
+            api = Helpers.api_props(controller).pipelineType
 
             pipeline_info = {
                 "event_id": event_id,

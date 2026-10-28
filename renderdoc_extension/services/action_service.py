@@ -62,7 +62,7 @@ class ActionService:
         def callback(controller):
             root_actions = controller.GetRootActions()
             structured_file = controller.GetStructuredFile()
-            api = controller.GetAPIProperties().pipelineType
+            api = Helpers.api_props(controller).pipelineType
 
             # Statistics counters
             stats = {
