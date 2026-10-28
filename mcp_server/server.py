@@ -954,6 +954,54 @@ def get_buffer_bindings_at_event(event_id: ReqInt) -> dict:
     return bridge.call("get_buffer_bindings_at_event", {"event_id": event_id}, timeout=_LONG_TIMEOUT)
 
 
+def _classify_pipeline_diff(differences: list[dict]) -> dict:
+    """Group compare_pipeline_states differences by what they mean for batching.
+
+    Only restates facts about the two draws; it does not predict engine behaviour.
+    """
+    groups: dict[str, list[str]] = {
+        "shader": [], "textures": [], "constant_buffer_resource": [], "constant_buffer_offset": [],
+        "mesh": [], "render_state": [], "targets": [],
+    }
+    for d in differences:
+        path = d["path"]
+        if path.startswith("shaders.") and path.endswith(".shader"):
+            groups["shader"].append(path)
+        elif ".textures." in path:
+            groups["textures"].append(path)
+        elif ".constant_buffers." in path:
+            # values look like "ResourceId::7022+0/384": same buffer, different offset is
+            # the per-draw slice of one big buffer; a different buffer is a different upload
+            a, b = str(d["a"]), str(d["b"])
+            same_buffer = a.split("+")[0] == b.split("+")[0]
+            groups["constant_buffer_offset" if same_buffer else "constant_buffer_resource"].append(path)
+        elif path.startswith(("vertex_buffers", "index_buffer")):
+            groups["mesh"].append(path)
+        elif path.startswith(("render_targets", "depth_target")):
+            groups["targets"].append(path)
+        else:
+            groups["render_state"].append(path)
+    groups = {k: v for k, v in groups.items() if v}
+
+    notes = []
+    if not groups:
+        notes.append("The two draws have identical pipeline state.")
+    elif set(groups) <= {"mesh", "constant_buffer_offset"}:
+        notes.append("Shader, textures, render state and targets are identical; only the mesh and the "
+                     "offset into the same constant buffer differ. That is the per-draw slice a "
+                     "SRP-Batcher-style submission produces. Merging into one instanced draw would "
+                     "additionally need the same mesh.")
+    else:
+        blockers = [k for k in ("shader", "textures", "constant_buffer_resource", "render_state", "targets")
+                    if k in groups]
+        if blockers:
+            notes.append("These differ and each needs its own state change between the draws: %s."
+                         % ", ".join(blockers))
+        if "mesh" in groups:
+            notes.append("The meshes differ as well, so they cannot be one instanced draw.")
+    return {"categories": groups, "notes": notes}
+
+
 @mcp.tool
 def compare_pipeline_states(event_id_a: ReqInt, event_id_b: ReqInt) -> dict:
     """
@@ -965,12 +1013,19 @@ def compare_pipeline_states(event_id_a: ReqInt, event_id_b: ReqInt) -> dict:
     Answers "these two draws look the same, why were they not batched?": a
     different constant buffer offset or texture unit is the usual culprit.
     Verdict is IDENTICAL when nothing differs.
+
+    The result also carries "batching": the differences grouped into shader /
+    textures / constant_buffer_resource / constant_buffer_offset / mesh /
+    render_state / targets, with a plain statement of what that means for merging
+    the two draws (e.g. only mesh + same-buffer offset differing).
     """
-    return bridge.call(
+    result = bridge.call(
         "compare_pipeline_states",
         {"event_id_a": event_id_a, "event_id_b": event_id_b},
         timeout=_LONG_TIMEOUT,
     )
+    result["batching"] = _classify_pipeline_diff(result.get("differences", []))
+    return result
 
 
 @mcp.tool
