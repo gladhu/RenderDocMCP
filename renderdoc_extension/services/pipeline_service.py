@@ -2,6 +2,8 @@
 Pipeline state service for RenderDoc.
 """
 
+import re
+
 import renderdoc as rd
 
 from ..utils import Parsers, Serializers, Helpers
@@ -463,3 +465,154 @@ class PipelineService:
             pass
 
         return resources
+
+    # ==================== Targeted constant buffer read ====================
+
+    @staticmethod
+    def _resolve_cbuffer_name(blocks, name):
+        """Resolve a cbuffer name to an index in reflection.constantBlocks.
+
+        Match order: exact name, case-insensitive exact, unique substring, then
+        a trailing number behind a cb/pb/b/buffer/ubo style prefix ("cb5",
+        "cbuffer5", "buffer_05") taken as the index itself.
+
+        Returns None when nothing matches or a substring is ambiguous; the
+        caller reports the available names.
+        """
+        if not name:
+            return None
+        for i in range(len(blocks)):
+            if blocks[i].name == name:
+                return i
+        low = name.lower()
+        for i in range(len(blocks)):
+            if blocks[i].name.lower() == low:
+                return i
+        matches = [i for i in range(len(blocks)) if low in blocks[i].name.lower()]
+        if len(matches) == 1:
+            return matches[0]
+        m = re.match(r"^([a-z_]*?)(\d+)$", low)
+        if m:
+            prefix = m.group(1)
+            if prefix == "b" or any(k in prefix for k in ("cb", "pb", "buffer", "ubo")):
+                idx = int(m.group(2))
+                if 0 <= idx < len(blocks):
+                    return idx
+        return None
+
+    def read_constant_buffer(self, event_id, stage, slot=None, array_index=0):
+        """Read one constant buffer of one stage at an event.
+
+        slot is an index into reflection.constantBlocks, not an API bind point:
+        on GLES captures every block reports bind point 0, so the index is what
+        tells them apart. It may also be a cbuffer name (exact, substring or
+        "cb5" style). With no slot the stage's blocks are listed with their
+        index, name and size, which is the index <-> name table needed to pick one.
+        """
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            controller.SetFrameEvent(event_id, True)
+            pipe = controller.GetPipelineState()
+            stage_enum = Parsers.parse_stage(stage)
+
+            if pipe.GetShader(stage_enum) == rd.ResourceId.Null():
+                result["error"] = "No %s shader bound at event %d" % (stage, event_id)
+                return
+            reflection = pipe.GetShaderReflection(stage_enum)
+            if not reflection:
+                result["error"] = "No shader reflection available"
+                return
+            blocks = reflection.constantBlocks
+
+            slot_idx = None
+            if slot is not None and not (isinstance(slot, str) and not slot.strip()):
+                if isinstance(slot, bool):
+                    result["error"] = "slot must be an index or a cbuffer name"
+                    return
+                if isinstance(slot, (int, float)):
+                    slot_idx = int(slot)
+                else:
+                    text = str(slot).strip()
+                    if text.lstrip("-").isdigit():
+                        slot_idx = int(text)
+                    else:
+                        slot_idx = self._resolve_cbuffer_name(blocks, text)
+                        if slot_idx is None:
+                            result["error"] = "No cbuffer named %r. Available: %s" % (
+                                text,
+                                "; ".join("%d=%s" % (i, blocks[i].name) for i in range(len(blocks))),
+                            )
+                            return
+
+            if slot_idx is None:
+                result["data"] = {
+                    "event_id": event_id,
+                    "stage": stage,
+                    "constant_buffers": [
+                        {
+                            "index": i,
+                            "name": blocks[i].name,
+                            "byte_size": blocks[i].byteSize,
+                            "variable_count": len(blocks[i].variables) if blocks[i].variables else 0,
+                        }
+                        for i in range(len(blocks))
+                    ],
+                    "hint": "Pass slot=<index> or a cbuffer name to read its values. The index is "
+                            "the position in this list, not the API bind point.",
+                }
+                return
+
+            if slot_idx < 0 or slot_idx >= len(blocks):
+                result["error"] = "Slot %d out of range (0..%d)" % (slot_idx, len(blocks) - 1)
+                return
+
+            cb = blocks[slot_idx]
+            data = {
+                "event_id": event_id,
+                "stage": stage,
+                "slot": slot_idx,
+                "name": cb.name,
+                "byte_size": cb.byteSize,
+                "variable_count": len(cb.variables) if cb.variables else 0,
+            }
+            try:
+                used = pipe.GetConstantBlock(stage_enum, slot_idx, array_index)
+                desc = used.descriptor
+                data["bound_resource_id"] = str(desc.resource)
+                data["byte_offset"] = desc.byteOffset
+                data["bound_byte_size"] = desc.byteSize
+                if desc.resource == rd.ResourceId.Null():
+                    data["status"] = "No Resource"
+                    data["variables"] = []
+                else:
+                    variables = controller.GetCBufferVariableContents(
+                        pipe.GetGraphicsPipelineObject(),
+                        reflection.resourceId,
+                        stage_enum,
+                        reflection.entryPoint,
+                        slot_idx,
+                        desc.resource,
+                        desc.byteOffset,
+                        desc.byteSize,
+                    )
+                    data["variables"] = Serializers.serialize_variables(variables)
+            except Exception as e:
+                data["error"] = str(e)
+            result["data"] = data
+
+        self._invoke(callback)
+
+        if result["error"]:
+            raise ValueError(result["error"])
+        if result["data"] is None:
+            # BlockInvoke swallows exceptions raised inside the callback, leaving
+            # the result untouched; surface that instead of returning null.
+            raise ValueError(
+                "read_constant_buffer did not complete (an exception was probably swallowed "
+                "by BlockInvoke, see the qrenderdoc output); check the stage name"
+            )
+        return result["data"]

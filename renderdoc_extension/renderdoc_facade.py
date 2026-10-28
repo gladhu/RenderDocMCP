@@ -161,6 +161,10 @@ class RenderDocFacade:
         """Get full pipeline state at an event"""
         return self._pipeline.get_pipeline_state(event_id)
 
+    def read_constant_buffer(self, event_id, stage, slot=None, array_index=0):
+        """Read one constant buffer, or list the stage's buffers when slot is empty"""
+        return self._pipeline.read_constant_buffer(event_id, stage, slot, array_index)
+
     # ==================== Analysis Operations ====================
 
     def get_draw_coverage(self, event_ids=None, marker_filter=None, event_id_min=None, event_id_max=None):

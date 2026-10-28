@@ -308,6 +308,36 @@ def get_pipeline_state(event_id: ReqInt) -> dict:
 
 
 @mcp.tool
+def read_constant_buffer(
+    event_id: ReqInt,
+    stage: StageReq,
+    slot: int | str | None = None,
+    array_index: LInt = 0,
+) -> dict:
+    """
+    Read one constant buffer (uniform block) of a shader stage at an event, as
+    named variables (vec4 / mat4 / int ...). Much lighter than get_pipeline_state,
+    which dumps every buffer of every stage.
+
+    Args:
+        event_id: Draw call event id
+        stage: vertex / pixel / compute (vs / ps / cs also accepted)
+        slot: Index into the shader's constant blocks, or a cbuffer name (exact,
+            substring, or "cb5" style). NOT the API bind point: on GLES captures
+            every block reports bind point 0, so use the index from the list.
+            Leave empty to list the stage's blocks (index, name, size) first.
+        array_index: Element when the block is an array of buffers (default 0)
+
+    Returns the bound resource, byte range and per-variable values; a block with
+    nothing bound reports status "No Resource".
+    """
+    params: dict[str, object] = {"event_id": event_id, "stage": stage, "array_index": array_index}
+    if slot is not None and not (isinstance(slot, str) and not slot.strip()):
+        params["slot"] = slot
+    return bridge.call("read_constant_buffer", params, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
 def list_captures(directory: str) -> dict:
     """
     List all RenderDoc capture files (.rdc) in the specified directory.

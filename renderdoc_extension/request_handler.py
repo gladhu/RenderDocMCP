@@ -27,6 +27,7 @@ class RequestHandler:
             "get_texture_info": self._handle_get_texture_info,
             "get_texture_data": self._handle_get_texture_data,
             "get_pipeline_state": self._handle_get_pipeline_state,
+            "read_constant_buffer": self._handle_read_constant_buffer,
             "list_captures": self._handle_list_captures,
             "open_capture": self._handle_open_capture,
             "get_draw_coverage": self._handle_get_draw_coverage,
@@ -192,6 +193,18 @@ class RequestHandler:
         if event_id is None:
             raise ValueError("event_id is required")
         return self.facade.get_pipeline_state(int(event_id))
+
+    def _handle_read_constant_buffer(self, params):
+        """Handle read_constant_buffer request"""
+        event_id = params.get("event_id")
+        stage = params.get("stage")
+        if event_id is None:
+            raise ValueError("event_id is required")
+        if not stage:
+            raise ValueError("stage is required")
+        return self.facade.read_constant_buffer(
+            int(event_id), stage, params.get("slot"), int(params.get("array_index", 0))
+        )
 
     def _handle_list_captures(self, params):
         """Handle list_captures request"""
