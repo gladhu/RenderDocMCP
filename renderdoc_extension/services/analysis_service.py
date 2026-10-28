@@ -10,8 +10,12 @@ import math
 import os
 import struct
 
+import hashlib
+
 import renderdoc as rd
 
+from .gl_state import STATE_CALLS, draw_state, track_draws
+from .gl_stream import collect_stream
 from ..utils import Helpers, Parsers
 
 
@@ -64,6 +68,23 @@ class AnalysisService:
             return action.depthOut
         return None
 
+    def _sampled_texture_ids(self, pipe, limit=24):
+        """Resource ids of every texture bound to the pixel shader (same read as _texture_names)"""
+        ids = []
+        try:
+            for used in pipe.GetReadOnlyResources(rd.ShaderStage.Pixel):
+                rid = used.descriptor.resource
+                if rid == rd.ResourceId.Null():
+                    continue
+                key = str(rid)
+                if key not in ids:
+                    ids.append(key)
+                if len(ids) >= limit:
+                    break
+        except Exception:
+            pass
+        return ids
+
     def _texture_names(self, controller, pipe, limit=3):
         """Names of textures bound to the pixel shader (skipping engine defaults)"""
         names = []
@@ -85,11 +106,17 @@ class AnalysisService:
 
     # ==================== Coverage ====================
 
-    def get_draw_coverage(self, event_ids=None, marker_filter=None, event_id_min=None, event_id_max=None):
+    def get_draw_coverage(self, event_ids=None, marker_filter=None, event_id_min=None, event_id_max=None,
+                          with_state=False, with_textures=False):
         """
         Per-draw pixel coverage measured with RenderDoc's depth-test overlay.
         passed = pixels that passed the depth test (shaded), failed = covered but occluded.
         Counting is done with GetHistogram so no image data is transferred.
+
+        Each entry also carries the draw's geometry (num_indices, num_instances, topology) and the
+        size of its render target. with_state adds blend_enabled / depth_test / depth_write read from
+        the pipeline (slower: one more state read per draw). with_textures adds sampled_textures, the
+        resource ids of all textures bound to the pixel shader.
         """
         if not self.ctx.IsCaptureLoaded():
             raise ValueError("No capture loaded")
@@ -107,6 +134,13 @@ class AnalysisService:
             )
             sub = rd.Subresource(0, 0, 0)
             entries = []
+            tracked = {}
+            if with_state and Helpers.enum_name("GraphicsAPI", Helpers.api_props(controller).pipelineType) == "OpenGL":
+                # GL state follows from the recorded calls; no per-draw pipeline read needed
+                tracked = dict((d["eid"], d) for d in track_draws(collect_stream(controller, STATE_CALLS)))
+            tex_size = {}
+            for tex in controller.GetTextures():
+                tex_size[str(tex.resourceId)] = [int(tex.width), int(tex.height)]
             try:
                 for action, path in draws:
                     target = self._first_output(action)
@@ -127,15 +161,28 @@ class AnalysisService:
                                                     (False, True, False, False))
                     red = controller.GetHistogram(overlay, sub, rd.CompType.Typeless, 0.0, 1.0,
                                                   (True, False, False, False))
-                    entries.append({
+                    entry = {
                         "event_id": action.eventId,
                         "marker": path,
                         "pixel_shader": str(pipe.GetShader(rd.ShaderStage.Pixel)),
                         "render_target": str(target),
+                        "rt_size": tex_size.get(str(target)),
                         "passed": int(green[-1]),
                         "failed": int(red[-1]),
                         "textures": self._texture_names(controller, pipe),
-                    })
+                        "num_indices": int(action.numIndices),
+                        "num_instances": int(action.numInstances),
+                    }
+                    try:
+                        entry["topology"] = Helpers.enum_name("Topology", pipe.GetPrimitiveTopology())
+                    except Exception:
+                        entry["topology"] = "TriangleList"
+                    if with_textures:
+                        entry["sampled_textures"] = self._sampled_texture_ids(pipe)
+                    if with_state:
+                        gl_draw = tracked.get(int(action.eventId))
+                        entry.update(draw_state(gl_draw) if gl_draw else _draw_state(controller, pipe))
+                    entries.append(entry)
             finally:
                 output.Shutdown()
 
@@ -326,6 +373,7 @@ class AnalysisService:
                 if key not in raw_cache:
                     raw_cache[key] = self._shader_source(controller, refl)
                 kind, text = raw_cache[key]
+                digest = None if text is None else hashlib.md5(text.encode("utf-8", "replace")).hexdigest()[:12]
                 if text is None:
                     entries.append({"event_id": action.eventId, "shader": key, "error": "source unavailable (only GLSL is supported)"})
                     continue
@@ -346,6 +394,7 @@ class AnalysisService:
                     "event_id": action.eventId,
                     "marker": path,
                     "shader": key,
+                    "shader_hash": digest,       # content hash: stable across captures, unlike ResourceIds
                     "source_id": source_id,
                     "folded_uniforms": len(defines),
                     "textures": self._texture_names(controller, pipe),
@@ -1144,6 +1193,30 @@ def _split_restart(indices):
     if current:
         runs.append(current)
     return runs
+
+
+def _draw_state(controller, pipe):
+    """blend_enabled / depth_test / depth_write of the current draw (None when unreadable)"""
+    ff = Helpers.fixed_function_state(controller, pipe)
+    blend = ff.get("blend") or {}
+    rows = list(blend.values())
+    depth = ff.get("depth") or {}
+    enabled = [r for r in rows if r[0]]
+    return {
+        "blend_enabled": bool(enabled) if rows else None,
+        # Unity writes opaque materials as "Blend One Zero": blend is on but the colour is simply overwritten
+        "blend_opaque": all(_is_one_zero(r[1], r[2]) for r in enabled) if enabled else None,
+        "blend_color": "%s/%s" % (enabled[0][1], enabled[0][2]) if enabled else None,
+        "depth_test": depth.get("test"),
+        "depth_write": depth.get("write"),
+    }
+
+
+def _is_one_zero(src, dst):
+    """colour blend factors (ONE, ZERO), whatever way this build spells the enum"""
+    def norm(v):
+        return str(v).rsplit(".", 1)[-1].lower()
+    return norm(src) in ("one", "1") and norm(dst) in ("zero", "0")
 
 
 def _topology_name(postvs, pipe):

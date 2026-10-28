@@ -42,9 +42,9 @@ class RenderDocFacade:
             ctx: The pyrenderdoc CaptureContext from register()
         """
         self.ctx = ctx
+        Helpers.ctx = ctx
 
         # Initialize service classes
-        Helpers.ctx = ctx
         self._capture = CaptureManager(ctx, self._invoke)
         self._action = ActionService(ctx, self._invoke)
         self._search = SearchService(ctx, self._invoke)
@@ -196,9 +196,11 @@ class RenderDocFacade:
 
     # ==================== Analysis Operations ====================
 
-    def get_draw_coverage(self, event_ids=None, marker_filter=None, event_id_min=None, event_id_max=None):
+    def get_draw_coverage(self, event_ids=None, marker_filter=None, event_id_min=None, event_id_max=None,
+                          with_state=False, with_textures=False):
         """Per-draw depth-test pixel coverage"""
-        return self._analysis.get_draw_coverage(event_ids, marker_filter, event_id_min, event_id_max)
+        return self._analysis.get_draw_coverage(event_ids, marker_filter, event_id_min, event_id_max,
+                                                with_state, with_textures)
 
     def get_shader_usage(self, marker_filter=None, event_id_min=None, event_id_max=None):
         """Group draw calls by pixel shader"""
