@@ -1110,6 +1110,46 @@ def export_mesh(event_id: ReqInt, output_path: str) -> dict:
 
 
 @mcp.tool
+def get_api_calls(
+    event_id: OptInt = None,
+    start_event: OptInt = None,
+    end_event: OptInt = None,
+    include_params: bool = True,
+    name_filter: str = "",
+    max_calls: LInt = 200,
+) -> dict:
+    """
+    Raw API calls recorded in the capture, with their parameter values.
+
+    list/get_draw_calls only show draws, clears and markers. The state setup around
+    them (glUniform*, glBindBuffer, glBlendFunc, glEnable, barriers, ...) is not
+    visible there; this tool exposes it. Pick calls either by
+
+    - event_id: the calls that belong to that action, i.e. the setup before the draw
+    - start_event + end_event: every call whose event id lies in the range
+
+    Args:
+        include_params: include each call's argument values (resource ids, enums
+            as names, structs/arrays nested; arrays are cut at 64 elements)
+        name_filter: case-insensitive substring of the API function name,
+            e.g. "Uniform", "Bind", "Blend"
+        max_calls: cap on returned calls (max 1000); matched / truncated tell you
+            if more existed
+    Each call carries event_id, name, duration_us when recorded, and params.
+    """
+    params: dict[str, object] = {
+        "include_params": include_params, "name_filter": name_filter, "max_calls": max_calls,
+    }
+    if event_id is not None:
+        params["event_id"] = event_id
+    if start_event is not None:
+        params["start_event"] = start_event
+    if end_event is not None:
+        params["end_event"] = end_event
+    return bridge.call("get_api_calls", params, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
 def get_cached_message(
     message_id: str,
     page: LInt = 1,

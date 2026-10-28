@@ -29,6 +29,7 @@ class RequestHandler:
             "get_pipeline_state": self._handle_get_pipeline_state,
             "read_constant_buffer": self._handle_read_constant_buffer,
             "compare_pipeline_states": self._handle_compare_pipeline_states,
+            "get_api_calls": self._handle_get_api_calls,
             "stat_instancing_efficiency": self._handle_stat_instancing_efficiency,
             "list_captures": self._handle_list_captures,
             "open_capture": self._handle_open_capture,
@@ -358,6 +359,20 @@ class RequestHandler:
         if resource_id is None:
             raise ValueError("resource_id is required")
         return self.facade.get_resource_usage(resource_id)
+
+    def _handle_get_api_calls(self, params):
+        """Handle get_api_calls request"""
+        def opt_int(key):
+            value = params.get(key)
+            return None if value is None else int(value)
+        return self.facade.get_api_calls(
+            event_id=opt_int("event_id"),
+            start_event=opt_int("start_event"),
+            end_event=opt_int("end_event"),
+            include_params=bool(params.get("include_params", True)),
+            name_filter=params.get("name_filter") or "",
+            max_calls=int(params.get("max_calls", 200)),
+        )
 
     def _handle_compare_pipeline_states(self, params):
         """Handle compare_pipeline_states request"""

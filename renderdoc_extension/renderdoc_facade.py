@@ -103,6 +103,12 @@ class RenderDocFacade:
         """Get detailed information about a specific draw call"""
         return self._action.get_draw_call_details(event_id)
 
+    def get_api_calls(self, event_id=None, start_event=None, end_event=None,
+                      include_params=True, name_filter="", max_calls=200):
+        """Raw API calls with parameters"""
+        return self._action.get_api_calls(event_id, start_event, end_event,
+                                          include_params, name_filter, max_calls)
+
     def get_action_timings(self, event_ids=None, marker_filter=None, exclude_markers=None):
         """Get GPU timing information for actions"""
         return self._action.get_action_timings(

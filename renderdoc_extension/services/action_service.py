@@ -397,3 +397,179 @@ class ActionService:
 
         self._invoke(callback)
         return result["data"]
+
+    def get_api_calls(self, event_id=None, start_event=None, end_event=None,
+                      include_params=True, name_filter="", max_calls=200):
+        """Raw API calls recorded in the capture, with their parameters.
+
+        The action tree only has draws, clears and markers; the state setup around
+        them (glUniform*, glBindBuffer, glBlendFunc, barriers...) is stored as
+        extra "events" of each action. Two ways to select calls:
+          event_id: the calls that belong to that action (the setup before it)
+          start_event / end_event: every call whose event id is in the range
+        name_filter is a case-insensitive substring of the API function name.
+        """
+        if not self.ctx.IsCaptureLoaded():
+            raise ValueError("No capture loaded")
+        if event_id is None and start_event is None and end_event is None:
+            raise ValueError("event_id, or start_event and end_event, is required")
+        if event_id is None and (start_event is None or end_event is None):
+            raise ValueError("start_event and end_event must be given together")
+        if event_id is None and int(start_event) > int(end_event):
+            raise ValueError("start_event must be <= end_event")
+        limit = max(1, min(int(max_calls), 1000))
+        needle = name_filter.lower() if name_filter else ""
+        result = {"data": None, "error": None}
+
+        def callback(controller):
+            sf = controller.GetStructuredFile()
+            collected = []
+
+            def take(action):
+                # Copy into plain tuples right away. Only actions obtained from this
+                # controller are read: ctx.GetAction() hands back a UI-thread object,
+                # and reading its .events array from the replay thread crashed qrenderdoc.
+                events = action.events
+                for i in range(len(events)):
+                    collected.append((int(events[i].eventId), int(events[i].chunkIndex)))
+
+            def find(actions, eid):
+                for a in actions:
+                    if a.eventId == eid:
+                        return a
+                    if a.children:
+                        hit = find(a.children, eid)
+                        if hit is not None:
+                            return hit
+                return None
+
+            if event_id is not None:
+                action = find(controller.GetRootActions(), int(event_id))
+                if action is None:
+                    result["error"] = "No action at event %d" % int(event_id)
+                    return
+                take(action)
+                scope = {"event_id": int(event_id), "action": action.GetName(sf)}
+            else:
+                lo, hi = int(start_event), int(end_event)
+
+                def walk(actions):
+                    for a in actions:
+                        # an action's events precede it, so its range is (previous action .. its own id]
+                        if a.eventId >= lo:
+                            take(a)
+                        if a.children:
+                            walk(a.children)
+                        if a.eventId > hi:
+                            return
+
+                walk(controller.GetRootActions())
+                collected[:] = [c for c in collected if lo <= c[0] <= hi]
+                scope = {"start_event": lo, "end_event": hi}
+
+            collected.sort()
+            seen = set()
+            calls = []
+            matched = 0
+            truncated = False
+            for eid, chunk_index in collected:
+                if (eid, chunk_index) in seen or chunk_index == 0xFFFFFFFF:
+                    continue
+                seen.add((eid, chunk_index))
+                if chunk_index >= len(sf.chunks):
+                    continue
+                chunk = sf.chunks[chunk_index]
+                name = str(chunk.name)
+                if needle and needle not in name.lower():
+                    continue
+                matched += 1
+                if len(calls) >= limit:
+                    truncated = True
+                    continue
+                entry = {"event_id": eid, "name": name}
+                try:
+                    entry["duration_us"] = int(chunk.metadata.durationMicro)
+                except Exception:
+                    pass
+                if include_params:
+                    params = []
+                    for i in range(chunk.NumChildren()):
+                        child = chunk.GetChild(i)
+                        if child is None:
+                            continue
+                        params.append({"name": str(child.name), "value": _sd_value(child)})
+                    entry["params"] = params
+                calls.append(entry)
+
+            scope.update({
+                "name_filter": name_filter or None,
+                "matched": matched,
+                "returned": len(calls),
+                "truncated": truncated,
+                "api_calls": calls,
+            })
+            result["data"] = scope
+
+        self._invoke(callback)
+        if result["error"]:
+            raise ValueError(result["error"])
+        return result["data"]
+
+
+# SDBasic values of this build (integers on purpose: reflecting SWIG enums crashes qrenderdoc)
+_SD_CHUNK, _SD_STRUCT, _SD_ARRAY, _SD_NULL, _SD_BUFFER, _SD_STRING, _SD_ENUM = 0, 1, 2, 3, 4, 5, 6
+_SD_UINT, _SD_SINT, _SD_FLOAT, _SD_BOOL, _SD_CHAR, _SD_RESOURCE, _SD_GPUADDR = 7, 8, 9, 10, 11, 12, 13
+
+
+def _sd_value(obj, depth=0):
+    """Structured-data object -> JSON-friendly value."""
+    if obj is None:
+        return None
+    if depth >= 6:
+        return "<max depth>"
+    try:
+        kind = int(obj.type.basetype)
+    except Exception:
+        return str(obj)
+    if kind == _SD_NULL:
+        return None
+    if kind == _SD_UINT:
+        return int(obj.data.basic.u)
+    if kind == _SD_SINT:
+        return int(obj.data.basic.i)
+    if kind == _SD_FLOAT:
+        return float(obj.data.basic.d)
+    if kind == _SD_BOOL:
+        return bool(obj.data.basic.b)
+    if kind == _SD_CHAR:
+        return str(obj.data.basic.c)
+    if kind == _SD_STRING:
+        for attr in ("str", "string"):          # attribute name differs between builds
+            try:
+                return str(getattr(obj.data, attr))
+            except Exception:
+                pass
+        return "<string>"
+    if kind == _SD_ENUM:
+        text = ""
+        try:
+            text = str(obj.data.str)
+        except Exception:
+            pass
+        return text or int(obj.data.basic.u)
+    if kind == _SD_RESOURCE:
+        return str(obj.data.basic.id)
+    if kind == _SD_GPUADDR:
+        return "0x%x" % int(obj.data.basic.u)
+    if kind == _SD_BUFFER:
+        return "<buffer %d bytes>" % int(obj.type.byteSize)
+    if kind in (_SD_CHUNK, _SD_STRUCT):
+        out = {}
+        for i in range(obj.NumChildren()):
+            child = obj.GetChild(i)
+            if child is not None:
+                out[str(child.name) or "[%d]" % i] = _sd_value(child, depth + 1)
+        return out
+    if kind == _SD_ARRAY:
+        return [_sd_value(obj.GetChild(i), depth + 1) for i in range(min(obj.NumChildren(), 64))]
+    return str(obj)
