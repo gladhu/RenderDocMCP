@@ -16,6 +16,7 @@ import hashlib
 import renderdoc as rd
 
 from .gl_state import STATE_CALLS, draw_state, track_draws
+from .draw_targets import event_targets
 from .gl_stream import collect_stream
 from ..utils import Helpers, Parsers
 
@@ -133,12 +134,16 @@ class AnalysisService:
         walk(controller.GetRootActions(), [])
         return selected
 
-    def _first_output(self, action):
+    def _first_output(self, action, targets=None, rid_of=None):
         for o in action.outputs:
             if o != rd.ResourceId.Null():
                 return o
         if action.depthOut != rd.ResourceId.Null():
             return action.depthOut
+        if targets and rid_of:                      # Vulkan: the render pass says what the draw writes
+            colors, depth = targets.get(int(action.eventId), ([], None))
+            first = colors[0] if colors else depth
+            return rid_of.get(first)
         return None
 
     def _sampled_texture_ids(self, pipe, limit=24):
@@ -215,8 +220,12 @@ class AnalysisService:
                 # GL state follows from the recorded calls; no per-draw pipeline read needed
                 tracked = dict((d["eid"], d) for d in track_draws(collect_stream(controller, STATE_CALLS)))
             tex_size = {}
+            rid_of = {}
             for tex in controller.GetTextures():
                 tex_size[str(tex.resourceId)] = [int(tex.width), int(tex.height)]
+                rid_of[str(tex.resourceId)] = tex.resourceId
+            api_name = Helpers.enum_name("GraphicsAPI", Helpers.api_props(controller).pipelineType)
+            targets = event_targets(self.ctx, controller, api_name)
             timing = dict.fromkeys(("set_event", "pipeline", "overlay", "histogram", "reflect"), 0.0)
             collectors = {}
             if with_sources:
@@ -226,7 +235,7 @@ class AnalysisService:
             t_start = time.time()
             try:
                 for action, path in draws:
-                    target = self._first_output(action)
+                    target = self._first_output(action, targets, rid_of)
                     if target is None:
                         continue
                     t0 = time.time()

@@ -26,7 +26,6 @@ import re
 
 from ..utils import Helpers
 from . import vk_passes as vk
-from .action_service import _sd_value
 from .gl_stream import collect_stream
 
 # ActionFlags values of this RenderDoc build (see pass_service)
@@ -501,14 +500,9 @@ class BandwidthService:
         return analyze_capture(controller, api, self.ctx.GetResourceName, top_n, sort_by)
 
 
-def analyze_capture(controller, api, name_of, top_n=30, sort_by="bytes"):
-    """Tile-pass bandwidth of the loaded capture. name_of(ResourceId) -> display name."""
-    is_vulkan = api == "Vulkan"
-    if not is_vulkan and api not in ("OpenGL", "OpenGLES"):
-        raise ValueError("analyze_pass_bandwidth supports OpenGL / GLES / Vulkan captures only (this one is %s)" % api)
-
-    textures = {}
-    rids = {}
+def texture_table(controller, name_of):
+    """({resource id str: facts used for sizing}, {resource id str: ResourceId}) of every texture in the capture"""
+    textures, rids = {}, {}
     for tex in controller.GetTextures():
         rid = str(tex.resourceId)
         fmt = str(tex.format.Name())
@@ -521,14 +515,20 @@ def analyze_capture(controller, api, name_of, top_n=30, sort_by="bytes"):
             "format": fmt, "samples": int(tex.msSamp), "bpp": format_bytes_per_pixel(fmt), "swapchain": swap,
         }
         rids[rid] = tex.resourceId
+    return textures, rids
+
+
+def analyze_capture(controller, api, name_of, top_n=30, sort_by="bytes"):
+    """Tile-pass bandwidth of the loaded capture. name_of(ResourceId) -> display name."""
+    is_vulkan = api == "Vulkan"
+    if not is_vulkan and api not in ("OpenGL", "OpenGLES"):
+        raise ValueError("analyze_pass_bandwidth supports OpenGL / GLES / Vulkan captures only (this one is %s)" % api)
+
+    textures, rids = texture_table(controller, name_of)
 
     problems = []
     if is_vulkan:
-        sf = controller.GetStructuredFile()
-        model_chunks = [(str(c.name), _sd_value(c, limit=12)) for c in sf.chunks if str(c.name) in vk.MODEL_CALLS]
-        model = vk.build_model(model_chunks)
-        stream = collect_stream(controller, vk.STREAM_CALLS)
-        passes, problems = vk.build_vulkan_passes(stream, model, textures)
+        passes, problems = vk.collect_passes(controller, textures)
         syncs = []
     else:
         stream = collect_stream(controller, _RELEVANT)

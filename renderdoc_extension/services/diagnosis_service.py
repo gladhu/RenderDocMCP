@@ -5,10 +5,12 @@ Uses only official ReplayController APIs (textures, actions, optional GLSL scan)
 """
 
 import re
+import struct
 
 import renderdoc as rd
 
 from .gl_state import STATE_CALLS, summarize_state_changes, track_draws
+from .draw_targets import event_targets, vulkan_passes
 from .gl_stream import collect_stream
 from ..utils import Helpers
 
@@ -55,6 +57,8 @@ class DiagnosisService:
                 name_of[str(tex.resourceId)] = self.ctx.GetResourceName(tex.resourceId)
 
             actions = Helpers.flatten_actions(controller.GetRootActions())
+            vk_pass_list = vulkan_passes(self.ctx, controller, api)       # Vulkan only: draws have no outputs
+            vk_targets = event_targets(self.ctx, controller, api, vk_pass_list)
             # GL: the bound program of every draw follows from the recorded calls, so the shader is
             # inspected once per program instead of replaying all draws
             program_of = {}
@@ -68,12 +72,14 @@ class DiagnosisService:
 
             for action in actions:
                 if action.flags & rd.ActionFlags.Drawcall:
-                    for o in action.outputs:
-                        if o != rd.ResourceId.Null():
-                            td = _tex_by_id(textures, o)
-                            if td is not None:
-                                key = (td.width, td.height)
-                                rt_counts[key] = rt_counts.get(key, 0) + 1
+                    drawn = [str(o) for o in action.outputs if o != rd.ResourceId.Null()]
+                    if not drawn and int(action.eventId) in vk_targets:
+                        drawn = list(vk_targets[int(action.eventId)][0])
+                    for o in drawn:
+                        td = _tex_by_id(textures, o)
+                        if td is not None:
+                            key = (td.width, td.height)
+                            rt_counts[key] = rt_counts.get(key, 0) + 1
                     program = program_of.get(int(action.eventId))
                     if program is not None and program in program_has_discard:
                         has_discard = program_has_discard[program]
@@ -91,13 +97,19 @@ class DiagnosisService:
                                 key = (td.width, td.height)
                                 rt_clears[key] = rt_clears.get(key, 0) + 1
 
+            # Vulkan clears are loadOp = CLEAR of a render pass attachment (once per pass and size)
+            for p in vk_pass_list:
+                sizes = set((a["width"], a["height"]) for a in p["attachments"] if a["load"].get("skipped_by") == "clear")
+                for key in sizes:
+                    rt_clears[key] = rt_clears.get(key, 0) + 1
+
             main_res = (0, 0)
             if rt_counts:
                 main_res = max(rt_counts, key=lambda k: rt_counts[k])
 
             risks = []
             if "precision" in cats:
-                risks.extend(_precision_risks(textures, name_of, actions))
+                risks.extend(_precision_risks(textures, name_of, actions, vk_targets))
             if "performance" in cats:
                 main_clears = rt_clears.get(main_res, 0)
                 if main_clears > 6:
@@ -178,6 +190,7 @@ class DiagnosisService:
             api = ""
 
         def callback(controller):
+            vk_targets = event_targets(self.ctx, controller, api)
             if api == "OpenGL":
                 # State follows from the recorded calls: no per-draw replay (minutes on a remote device)
                 draws = track_draws(collect_stream(controller, STATE_CALLS))
@@ -238,7 +251,7 @@ class DiagnosisService:
                         if name in track:
                             cur[name] = values[name]
                 if "render_target" in track:
-                    cur["render_target"] = Helpers.action_rt_key(action)
+                    cur["render_target"] = Helpers.action_rt_key(action, vk_targets)
 
                 for field, value in cur.items():
                     if value is not None:
@@ -297,17 +310,23 @@ def _state_report(analyzed, total, change_counts, unavailable, runs, method):
 
 
 def _tex_by_id(textures, rid):
+    rid = str(rid)
     for tex in textures:
-        if tex.resourceId == rid:
+        if str(tex.resourceId) == rid:
             return tex
     return None
 
 
-def _precision_risks(textures, name_of, actions):
+def _precision_risks(textures, name_of, actions, vk_targets=None):
     risks = []
     written = set()
     for action in actions:
         if action.flags & rd.ActionFlags.Drawcall:
+            if vk_targets and int(action.eventId) in vk_targets:
+                colors, depth = vk_targets[int(action.eventId)]
+                written.update(colors)
+                if depth:
+                    written.add(depth)
             for o in action.outputs:
                 if o != rd.ResourceId.Null():
                     written.add(str(o))
@@ -350,8 +369,11 @@ def _shader_has_discard(controller, action, sampled):
         if key in sampled:
             return sampled[key]
         refl = pipe.GetShaderReflection(rd.ShaderStage.Pixel)
-        files = refl.debugInfo.files
-        has = bool(files and files[0].contents and _glsl_has_discard(str(files[0].contents)))
+        if int(refl.encoding) in _SPIRV_ENCODINGS:
+            has = spirv_has_discard(bytes(refl.rawBytes))
+        else:
+            files = refl.debugInfo.files
+            has = bool(files and files[0].contents and _glsl_has_discard(str(files[0].contents)))
         sampled[key] = has
         return has
     except Exception:
@@ -359,6 +381,26 @@ def _shader_has_discard(controller, action, sampled):
 
 
 _DISCARD_RE = re.compile(r"\bdiscard\b")
+
+
+_SPIRV_ENCODINGS = (3, 7)             # ShaderEncoding.SPIRV, OpenGLSPIRV
+_SPIRV_KILL_OPS = (252, 4416, 5380)   # OpKill, OpTerminateInvocation, OpDemoteToHelperInvocation
+
+
+def spirv_has_discard(raw):
+    """True if a SPIR-V module contains an instruction that discards the fragment"""
+    if len(raw) < 20 or raw[:4] != b"#":
+        return False
+    words = struct.unpack("<%dI" % (len(raw) // 4), raw[:len(raw) // 4 * 4])
+    i = 5                                            # past the 5-word header
+    while i < len(words):
+        count, op = words[i] >> 16, words[i] & 0xFFFF
+        if count == 0:
+            return False
+        if op in _SPIRV_KILL_OPS:
+            return True
+        i += count
+    return False
 
 
 def _glsl_has_discard(source):

@@ -328,10 +328,15 @@ class Helpers:
         return int(w * h * d * arr * bpp * mip_factor)
 
     @staticmethod
-    def action_rt_key(action):
-        """Stable key for the color+depth targets of an action"""
+    def action_rt_key(action, targets=None):
+        """Stable key for the color+depth targets of an action.
+
+        targets: {event id: ([colour ids], depth id)} for APIs whose actions carry no outputs (Vulkan)."""
         colors = [str(o) for o in action.outputs if o != rd.ResourceId.Null()]
         depth = str(action.depthOut) if action.depthOut != rd.ResourceId.Null() else ""
+        if not colors and not depth and targets and int(action.eventId) in targets:
+            colors, depth = targets[int(action.eventId)]
+            depth = depth or ""
         if not colors and not depth:
             return None
         return "|".join(colors) + "#d:" + depth

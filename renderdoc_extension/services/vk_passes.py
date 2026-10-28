@@ -207,7 +207,7 @@ def build_vulkan_passes(stream, model, textures):
             cur = {
                 "index": len(passes), "fbo": fbo, "sig": None, "begin": ev["eid"], "end": ev["eid"],
                 "marker": ev.get("marker", ""), "draws": 0, "ops": [], "outputs": None, "depth": None,
-                "flush_causes": [], "attachments": atts,
+                "flush_causes": [], "attachments": atts, "draw_eids": [],
             }
             passes.append(cur)
         elif name in END_PASS:
@@ -217,4 +217,29 @@ def build_vulkan_passes(stream, model, textures):
             cur["end"] = max(cur["end"], ev["eid"])
             if action is not None and action["flags"] & 2:      # Drawcall
                 cur["draws"] += 1
+                cur["draw_eids"].append(ev["eid"])
     return passes, problems
+
+
+def targets_by_event(passes):
+    """{draw event id: ([colour image ids], depth image id or None)} from the render pass each draw is in.
+
+    Vulkan draw actions carry no outputs (RenderDoc leaves ActionDescription.outputs empty), and reading
+    them from the pipeline state costs a SetFrameEvent per draw; the render pass already says it.
+    """
+    out = {}
+    for p in passes:
+        colors = [a["resource_id"] for a in p["attachments"] if a["role"].startswith("color") and "resolve" not in a["role"]]
+        depth = next((a["resource_id"] for a in p["attachments"] if a["role"] == "depth"), None)
+        for eid in p.get("draw_eids", []):
+            out[eid] = (colors, depth)
+    return out
+
+
+def collect_passes(controller, textures):
+    """Tile passes of a loaded Vulkan capture: (passes, problems). textures as in bandwidth_service.texture_table"""
+    from .action_service import _sd_value
+    from .gl_stream import collect_stream
+    sf = controller.GetStructuredFile()
+    chunks = [(str(c.name), _sd_value(c, limit=12)) for c in sf.chunks if str(c.name) in MODEL_CALLS]
+    return build_vulkan_passes(collect_stream(controller, STREAM_CALLS), build_model(chunks), textures)
