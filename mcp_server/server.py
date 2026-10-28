@@ -10,6 +10,9 @@ from fastmcp import FastMCP
 
 from .bridge.client import RenderDocBridge, RenderDocBridgeError
 from .config import settings
+from .params import (
+    LInt, OptInt, OptIntList, ReqInt, StageOpt, StageReq, StageVP, StageVPCOpt,
+)
 
 # Initialize FastMCP server
 mcp = FastMCP(
@@ -54,8 +57,8 @@ def get_draw_calls(
     include_children: bool = True,
     marker_filter: str | None = None,
     exclude_markers: list[str] | None = None,
-    event_id_min: int | None = None,
-    event_id_max: int | None = None,
+    event_id_min: OptInt = None,
+    event_id_max: OptInt = None,
     only_actions: bool = False,
     flags_filter: list[str] | None = None,
 ) -> dict:
@@ -108,7 +111,7 @@ def get_frame_summary() -> dict:
 @mcp.tool
 def find_draws_by_shader(
     shader_name: str,
-    stage: Literal["vertex", "hull", "domain", "geometry", "pixel", "compute"] | None = None,
+    stage: StageOpt = None,
 ) -> dict:
     """
     Find all draw calls using a shader with the given name (partial match).
@@ -154,7 +157,7 @@ def find_draws_by_resource(resource_id: str) -> dict:
 
 
 @mcp.tool
-def get_draw_call_details(event_id: int) -> dict:
+def get_draw_call_details(event_id: ReqInt) -> dict:
     """
     Get detailed information about a specific draw call.
 
@@ -168,7 +171,7 @@ def get_draw_call_details(event_id: int) -> dict:
 
 @mcp.tool
 def get_action_timings(
-    event_ids: list[int] | None = None,
+    event_ids: OptIntList = None,
     marker_filter: str | None = None,
     exclude_markers: list[str] | None = None,
 ) -> dict:
@@ -205,8 +208,8 @@ def get_action_timings(
 
 @mcp.tool
 def get_shader_info(
-    event_id: int,
-    stage: Literal["vertex", "hull", "domain", "geometry", "pixel", "compute"],
+    event_id: ReqInt,
+    stage: StageReq,
 ) -> dict:
     """
     Get shader information for a specific stage at a given event.
@@ -223,8 +226,8 @@ def get_shader_info(
 @mcp.tool
 def get_buffer_contents(
     resource_id: str,
-    offset: int = 0,
-    length: int = 0,
+    offset: LInt = 0,
+    length: LInt = 0,
 ) -> dict:
     """
     Read the contents of a buffer resource.
@@ -258,10 +261,10 @@ def get_texture_info(resource_id: str) -> dict:
 @mcp.tool
 def get_texture_data(
     resource_id: str,
-    mip: int = 0,
-    slice: int = 0,
-    sample: int = 0,
-    depth_slice: int | None = None,
+    mip: LInt = 0,
+    slice: LInt = 0,
+    sample: LInt = 0,
+    depth_slice: OptInt = None,
 ) -> dict:
     """
     Read the pixel data of a texture resource.
@@ -285,7 +288,7 @@ def get_texture_data(
 
 
 @mcp.tool
-def get_pipeline_state(event_id: int) -> dict:
+def get_pipeline_state(event_id: ReqInt) -> dict:
     """
     Get the full graphics pipeline state at a specific event.
 
@@ -400,10 +403,10 @@ def _selection(event_ids, marker_filter, event_id_min, event_id_max) -> dict[str
 
 @mcp.tool
 def get_draw_coverage(
-    event_ids: list[int] | None = None,
+    event_ids: OptIntList = None,
     marker_filter: str | None = None,
-    event_id_min: int | None = None,
-    event_id_max: int | None = None,
+    event_id_min: OptInt = None,
+    event_id_max: OptInt = None,
     summary_only: bool = False,
 ) -> dict:
     """
@@ -434,8 +437,8 @@ def get_draw_coverage(
 @mcp.tool
 def get_shader_usage(
     marker_filter: str | None = None,
-    event_id_min: int | None = None,
-    event_id_max: int | None = None,
+    event_id_min: OptInt = None,
+    event_id_max: OptInt = None,
 ) -> dict:
     """
     Group draw calls by pixel shader: draw count, primitive count, sample
@@ -450,8 +453,8 @@ def get_shader_usage(
 
 @mcp.tool
 def get_shader_source(
-    event_id: int,
-    stage: Literal["vertex", "pixel"] = "pixel",
+    event_id: ReqInt,
+    stage: StageVP = "pixel",
     fold_uniforms: bool = False,
     overrides: dict[str, str] | None = None,
     output_path: str | None = None,
@@ -527,11 +530,11 @@ def _shader_cost(selection: dict[str, object], stage: str, compiler: str, gpu: s
 
 @mcp.tool
 def analyze_shader_cost(
-    event_ids: list[int] | None = None,
+    event_ids: OptIntList = None,
     marker_filter: str | None = None,
-    event_id_min: int | None = None,
-    event_id_max: int | None = None,
-    stage: Literal["vertex", "pixel"] = "pixel",
+    event_id_min: OptInt = None,
+    event_id_max: OptInt = None,
+    stage: StageVP = "pixel",
     compiler: Literal["mali", "adreno"] = "mali",
     gpu: str | None = None,
     fold_uniforms: bool = True,
@@ -597,13 +600,13 @@ def analyze_shader_cost(
 @mcp.tool
 def estimate_shading_cost(
     marker_filter: str | None = None,
-    event_id_min: int | None = None,
-    event_id_max: int | None = None,
-    event_ids: list[int] | None = None,
+    event_id_min: OptInt = None,
+    event_id_max: OptInt = None,
+    event_ids: OptIntList = None,
     compiler: Literal["mali", "adreno"] = "mali",
     gpu: str | None = None,
     fold_uniforms: bool = True,
-    top_n: int = 30,
+    top_n: LInt = 30,
 ) -> dict:
     """
     Estimate where fragment shading cost goes in a frame:
@@ -679,7 +682,7 @@ def estimate_shading_cost(
 @mcp.tool
 def save_texture(
     output_path: str,
-    event_id: int | None = None,
+    event_id: OptInt = None,
     resource_id: str | None = None,
     target: str = "color0",
     file_type: Literal["png", "jpg", "bmp", "tga", "hdr", "exr", "dds"] = "png",
@@ -701,9 +704,9 @@ def save_texture(
 
 @mcp.tool
 def pick_pixel(
-    x: int,
-    y: int,
-    event_id: int | None = None,
+    x: ReqInt,
+    y: ReqInt,
+    event_id: OptInt = None,
     resource_id: str | None = None,
     target: str = "color0",
 ) -> dict:
@@ -752,7 +755,7 @@ def get_renderpass_list(
 
 
 @mcp.tool
-def get_pass_detail(pass_index: int) -> dict:
+def get_pass_detail(pass_index: ReqInt) -> dict:
     """
     List draw calls and attachments of one pass from get_renderpass_list.
     """
@@ -762,9 +765,9 @@ def get_pass_detail(pass_index: int) -> dict:
 @mcp.tool
 def list_frame_textures(
     sort_by: Literal["size", "usage", "name"] = "size",
-    top_n: int = 50,
+    top_n: LInt = 50,
     filter_fmt: str | None = None,
-    min_width: int | None = None,
+    min_width: OptInt = None,
     rt_only: bool = False,
 ) -> dict:
     """
@@ -787,12 +790,12 @@ def get_texture_detail(resource_id: str) -> dict:
 
 @mcp.tool
 def pixel_history(
-    x: int,
-    y: int,
-    event_id: int | None = None,
+    x: ReqInt,
+    y: ReqInt,
+    event_id: OptInt = None,
     resource_id: str | None = None,
     target: str = "color0",
-    max_entries: int = 200,
+    max_entries: LInt = 200,
 ) -> dict:
     """
     Modification history of one pixel: which draws wrote it, pre/post color,
@@ -810,7 +813,7 @@ def pixel_history(
 
 @mcp.tool
 def read_texture_stats(
-    event_id: int | None = None,
+    event_id: OptInt = None,
     resource_id: str | None = None,
     target: str = "color0",
 ) -> dict:
@@ -828,14 +831,14 @@ def read_texture_stats(
 
 @mcp.tool
 def sample_pixel_region(
-    event_id: int | None = None,
+    event_id: OptInt = None,
     resource_id: str | None = None,
     target: str = "color0",
-    x: int = 0,
-    y: int = 0,
-    width: int | None = None,
-    height: int | None = None,
-    sample_count: int = 256,
+    x: LInt = 0,
+    y: LInt = 0,
+    width: OptInt = None,
+    height: OptInt = None,
+    sample_count: LInt = 256,
     anomaly_threshold: float = 10.0,
 ) -> dict:
     """
@@ -864,8 +867,8 @@ def get_resource_usage(resource_id: str) -> dict:
 
 @mcp.tool
 def list_shaders(
-    stage: Literal["vertex", "pixel", "compute"] | None = None,
-    top_n: int = 50,
+    stage: StageVPCOpt = None,
+    top_n: LInt = 50,
 ) -> dict:
     """
     Unique shaders in the frame (draw + dispatch) with usage counts.
@@ -881,7 +884,7 @@ def list_shaders(
 def analyze_state_changes(
     marker_filter: str | None = None,
     change_types: list[str] | None = None,
-    max_draws: int = 200,
+    max_draws: LInt = 200,
 ) -> dict:
     """
     Count shader / blend / depth / cull / render_target changes between
@@ -897,9 +900,9 @@ def analyze_state_changes(
 
 @mcp.tool
 def get_post_vs_data(
-    event_id: int,
+    event_id: ReqInt,
     stage: Literal["vsin", "vsout", "gsout"] = "vsout",
-    max_vertices: int = 100,
+    max_vertices: LInt = 100,
 ) -> dict:
     """
     Post-transform vertex attributes (VS input, VS output, or GS output).
@@ -913,7 +916,7 @@ def get_post_vs_data(
 
 
 @mcp.tool
-def export_mesh(event_id: int, output_path: str) -> dict:
+def export_mesh(event_id: ReqInt, output_path: str) -> dict:
     """Export the draw's post-VS mesh as an OBJ (position / normal / uv when present)."""
     return bridge.call(
         "export_mesh",
