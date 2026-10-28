@@ -72,9 +72,16 @@ class RenderDocBridge:
                     # Small delay to ensure file is fully written
                     time.sleep(0.01)
 
-                    # Read response
-                    with open(RESPONSE_FILE, "r", encoding="utf-8") as f:
-                        response = json.load(f)
+                    # Read response. The file is visible while the extension is still streaming a big
+                    # result into it, so a half-written document is retried, not treated as an error.
+                    try:
+                        with open(RESPONSE_FILE, "r", encoding="utf-8") as f:
+                            response = json.load(f)
+                    except ValueError:
+                        if time.time() - start_time > timeout:
+                            raise
+                        time.sleep(0.05)
+                        continue
 
                     # Clean up response file
                     os.remove(RESPONSE_FILE)

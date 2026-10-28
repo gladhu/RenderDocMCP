@@ -145,9 +145,12 @@ class MCPBridgeServer(QObject):
                     "error": {"code": -32603, "message": str(e)}
                 }
 
-            # Write response
-            with open(RESPONSE_FILE, "w", encoding="utf-8") as f:
+            # Write response: to a temp file first, then rename, so the client never sees a
+            # half-written document (large results take longer than its polling delay)
+            tmp_file = RESPONSE_FILE + ".tmp"
+            with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(response, f)
+            os.replace(tmp_file, RESPONSE_FILE)
 
         except Exception as e:
             print("[MCP Bridge] Error processing request: %s" % str(e))
