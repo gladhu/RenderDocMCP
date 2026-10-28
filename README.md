@@ -92,11 +92,13 @@ uv tool update-shell  # 添加到 PATH
 3. 移动端抓帧：在界面左下角 Replay Context 选择手机（`adb://...`），再用 `open_capture(..., use_remote=True)`
 4. 通过 MCP 客户端访问数据
 
-> 真机远程回放大抓帧（几十 MB 的 GLES 抓帧）时，`open_capture` 返回后手机端还在初始化。过早发起回放调用在测试机上多次导致 qrenderdoc 访问冲突崩溃（故障日志在 `%TEMP%\rdmcp_fault.log`）。崩溃原因没有完全查清，建议打开抓帧后先等一两分钟再调用；崩溃后需要重启 RenderDoc 并重新打开抓帧。另外，qrenderdoc 会一直持有已加载的旧版扩展模块，更新扩展后需要重启 RenderDoc。
+> qrenderdoc 在回放线程里访问到 UI 线程的对象时会访问冲突直接退出（故障日志在 `%TEMP%\rdmcp_fault.log`）。开发扩展时踩到过两次：在回放线程里读 `ctx.GetAction(...).events`、把 `pipe.GetVBuffers()` 的返回值存进变量再遍历。需要 action 时请用 `controller.GetRootActions()` 取得的对象，遍历返回列表时直接 `for`。崩溃后需要重启 RenderDoc 并重新打开抓帧。另外，qrenderdoc 会一直持有已加载的旧版扩展模块，更新扩展后需要重启 RenderDoc。
+>
+> `open_capture` 之后不必固定等待：反复调用只读的 `get_replay_context`，再用 `get_capture_status` 探测回放线程，响应了就可以继续。
 
 ## MCP 工具列表
 
-共 41 个工具，另有 4 个分析 Prompt。
+共 44 个工具，另有 4 个分析 Prompt。
 
 ### 会话 / 抓帧
 
@@ -112,6 +114,8 @@ uv tool update-shell  # 添加到 PATH
 | 工具 | 说明 |
 |------|------|
 | `get_draw_calls` | 层级列出绘制调用，可按 marker、event 范围、flags 过滤 |
+| `get_api_calls` | 抓帧里的原始 API 调用及参数：按 `event_id`（该 action 之前的状态设置）或 `start_event`+`end_event` 取，`name_filter` 过滤函数名（如 `Uniform`、`Bind`）。能看到 `glUniform*` 的实际数值 |
+| `get_cached_message` | 读取因过大而被缓存的工具结果（见下文「超大结果缓存」），可翻页、按集合选择、搜索 |
 | `get_frame_summary` | 帧统计：API、DC/Dispatch/Clear/Copy/Present/marker 数量、顶层 marker、资源数 |
 | `get_renderpass_list` | 划分 RenderPass（PassBoundary → 直接子 DC 的 marker，子 marker 单独成 Pass → RT 切换） |
 | `get_pass_detail` | 指定 Pass 内的 DC 列表和附件 |
@@ -128,7 +132,7 @@ uv tool update-shell  # 添加到 PATH
 |------|------|
 | `get_pipeline_state` | 指定事件的完整管线：各 stage shader、SRV/UAV、sampler、常量缓冲、RT、viewport、IA |
 | `get_shader_info` | 指定 stage 的反汇编、常量缓冲取值、资源绑定 |
-| `read_constant_buffer` | 定点读取某个 stage 的一个常量缓冲（变量名 + 数值）。`slot` 是 shader 常量块的**索引**或 cbuffer 名字（精确 / 子串 / `cb1` 写法），不是 API 绑定点；`slot` 留空则列出该 stage 全部块的 索引-名字-大小 |
+| `read_constant_buffer` | 定点读取某个 stage 的一个常量缓冲（变量名 + 数值，`filter` 按变量名子串过滤）。`slot` 是 shader 常量块的**索引**或 cbuffer 名字（精确 / 子串 / `cb1` 写法），不是 API 绑定点；`slot` 留空则列出该 stage 全部块的 索引-名字-大小 |
 | `get_buffer_contents` | 读取 buffer（可指定 offset/length，Base64） |
 | `list_buffers` | 整帧 buffer 清单（id / 字节长度 / 名字）。`group_by_size` / `group_by_name` 出直方图，`unused_only` 列出从未被绑定、拷贝或清除的 buffer，`with_usage` 追加使用次数与首末 event |
 | `get_buffer_bindings_at_event` | 单个 DC 绑定的 buffer：已绑定的顶点缓冲、索引缓冲，以及各 stage 常量缓冲（按反射索引，含绑定的资源与字节范围） |
@@ -156,12 +160,13 @@ uv tool update-shell  # 添加到 PATH
 | `estimate_shading_cost` | 用「像素数 × 每像素开销」估算各 Shader 的着色开销占比，用于排热点、对比优化前后。Mali 用 malioc 周期，Adreno 用 aoc 指令数 |
 | `save_texture` | 保存贴图或某个事件的 color / depth RT 到本地图片，远程回放时同样可用 |
 | `pick_pixel` | 读取某个事件之后某个像素的颜色或深度 |
+| `find_pixels` | 按通道条件（`min_/max_` r/g/b/a、`has_nan/inf/negative`）在渲染目标里找像素，返回命中数、包围盒和命中点。区域不超过 `max_probes` 时穷举，否则等间距采样（`exhaustive` 标明） |
 | `diagnose_mobile_risks` | 扫描精度 / 性能 / 兼容性 / GPU 特性风险（R11G11B10、D16、超大贴图、过多 Clear、discard） |
 | `pixel_history` | 某个像素被哪些 DC 修改，以及 depth/stencil/discard 失败原因（默认最多 200 条） |
 | `read_texture_stats` | GPU min/max，深度目标按 Depth 解释；标记 NaN / Inf / 负值 / 全 0 |
 | `sample_pixel_region` | 网格采样一块区域，报告异常热点 |
 | `analyze_state_changes` | 统计连续 DC 的 shader/blend/depth/cull/RT 切换，找出可合批区间 |
-| `compare_pipeline_states` | 对比两个 event 的管线状态，只返回不同的字段：shader、纹理（按 unit）、常量缓冲（资源+偏移/大小）、顶点/索引缓冲、RT、拓扑、blend/depth/stencil/rasterizer。回答「这两个 DC 看起来一样，为什么没合批」 |
+| `compare_pipeline_states` | 对比两个 event 的管线状态，只返回不同的字段（另附 `batching`：把差异归为 shader / textures / 常量缓冲资源 / 常量缓冲偏移 / mesh / 渲染状态 / 目标，并说明对合批意味着什么）：shader、纹理（按 unit）、常量缓冲（资源+偏移/大小）、顶点/索引缓冲、RT、拓扑、blend/depth/stencil/rasterizer。回答「这两个 DC 看起来一样，为什么没合批」 |
 | `stat_instancing_efficiency` | 整帧实例化统计：实例化 DC 数与占比、实例数分布、「浪费的实例化」（实例数 ≤ 2），按前两层 marker（即各 pass）分桶；只读 action 树，很快 |
 | `get_post_vs_data` | 按索引顺序返回变换后顶点；只解码 float/half |
 | `export_mesh` | 按索引缓冲把 post-VS 网格导出为 OBJ（float/half） |
@@ -187,6 +192,10 @@ LLM 常把整型参数传成空串 `""` 或数字字符串 `"5"`，stage 写成�
 - 可选或带默认值的整型：`""` / `null` 回落到默认值；必填整型（`event_id`、`x`、`y` 等）传空值会得到带示例的明确错误
 - `"5"`、`" 5 "`、`5.0` 都按 5 处理；`event_ids` 接受 `[1,2]`、`"1,2,3"`、`"[1,2]"` 或单个数字
 - `stage` 大小写不敏感，接受 `vs` / `ps` / `cs` / `gs` / `hs` / `ds` / `frag` 等缩写，统一为 `vertex` / `pixel` / `compute` 等全名
+
+### 超大结果缓存
+
+工具结果超过 20000 字符（环境变量 `RENDERDOC_MCP_MAX_RESPONSE_CHARS`）时不直接返回，而是缓存在 MCP 服务器进程里（最近 64 条，`RENDERDOC_MCP_CACHE_MAX_ENTRIES`），返回 `{"status":"cached","message_id":...}`，附各列表的大小和前几项预览。再用 `get_cached_message(message_id, page, page_size, collection, search)` 翻页或搜索。例如整帧 `get_draw_calls` 在样本抓帧上是 118256 字符，会变成不到 1000 字符的信封。`get_texture_data` / `get_buffer_contents` 的 Base64 结果不缓存。进程重启或被淘汰后 id 失效，需要重跑原工具。
 
 ### 分析提示词（MCP Prompt）
 

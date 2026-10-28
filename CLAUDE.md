@@ -60,6 +60,9 @@ RenderDocMCP/
 | `list_buffers` | バッファ一覧（サイズ/名前フィルタ、group_by_size/name、unused_only、with_usage） |
 | `get_buffer_bindings_at_event` | 1 DC にバインドされた VB/IB/定数バッファ |
 | `compare_pipeline_states` | 2 つのイベントのパイプライン状態を比較し、異なるフィールドだけ返す（バッチされなかった理由の調査用） |
+| `get_api_calls` | 生の API 呼び出しとパラメータ（event_id か start/end_event、name_filter） |
+| `find_pixels` | チャンネル条件に合うピクセルを探す（グリッドサンプリング、バウンディングボックス付き） |
+| `get_cached_message` | 大きすぎて自動キャッシュされた結果のページング/検索 |
 | `stat_instancing_efficiency` | フレーム全体のインスタンシング統計（pass 別、無駄なインスタンス DC 数） |
 
 ### get_draw_calls フィルタリングオプション
