@@ -126,7 +126,7 @@ uv tool update-shell  # 添加到 PATH
 | `snapshot_metrics` | 把当前抓帧浓缩成指标快照（DC/状态切换/贴图内存/带宽/shader 着色成本/风险）并存成 JSON |
 | `diff_snapshots` | 对比两份快照：指标表(better/worse/same)、带宽问题 解决/新增/持续、按 shader 拆分「shader 本身变化」和「镜头覆盖变化」 |
 | `compare_captures` | 依次打开两个 rdc，各取快照并对比（优化前后验证一步到位，约 10 分钟/抓帧） |
-| `analyze_pass_bandwidth` | 每个 tile pass 的附件 Load/Store 带宽（clear/invalidate 是否跳过、Store 后是否还有人读、RT 被打断重开、blit/readback 强制 flush），输出严重度排序的问题列表。目前仅 OpenGL ES |
+| `analyze_pass_bandwidth` | 每个 tile pass 的附件 Load/Store 带宽（clear/invalidate 是否跳过、Store 后是否还有人读、RT 被打断重开、blit/readback 强制 flush），输出严重度排序的问题列表。OpenGL ES 与 Vulkan（Vulkan 直接读 loadOp/storeOp） |
 | `get_draw_call_details` | 单个 DC 的顶点数、输出等详情 |
 | `find_draws_by_shader` | 按 shader 名（部分匹配）反查 DC，可限定 stage |
 | `find_draws_by_texture` | 按贴图名（部分匹配）反查 DC，搜索 SRV / UAV / RT |

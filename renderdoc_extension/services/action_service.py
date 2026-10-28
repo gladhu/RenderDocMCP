@@ -531,11 +531,11 @@ _SD_CHUNK, _SD_STRUCT, _SD_ARRAY, _SD_NULL, _SD_BUFFER, _SD_STRING, _SD_ENUM = 0
 _SD_UINT, _SD_SINT, _SD_FLOAT, _SD_BOOL, _SD_CHAR, _SD_RESOURCE, _SD_GPUADDR = 7, 8, 9, 10, 11, 12, 13
 
 
-def _sd_value(obj, depth=0):
+def _sd_value(obj, depth=0, limit=6):
     """Structured-data object -> JSON-friendly value."""
     if obj is None:
         return None
-    if depth >= 6:
+    if depth >= limit:
         return "<max depth>"
     try:
         kind = int(obj.type.basetype)
@@ -578,8 +578,8 @@ def _sd_value(obj, depth=0):
         for i in range(obj.NumChildren()):
             child = obj.GetChild(i)
             if child is not None:
-                out[str(child.name) or "[%d]" % i] = _sd_value(child, depth + 1)
+                out[str(child.name) or "[%d]" % i] = _sd_value(child, depth + 1, limit)
         return out
     if kind == _SD_ARRAY:
-        return [_sd_value(obj.GetChild(i), depth + 1) for i in range(min(obj.NumChildren(), 64))]
+        return [_sd_value(obj.GetChild(i), depth + 1, limit) for i in range(min(obj.NumChildren(), 64))]
     return str(obj)

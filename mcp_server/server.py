@@ -947,9 +947,10 @@ def analyze_pass_bandwidth(
     A tile GPU loads a framebuffer's attachments from memory when a pass starts
     (unless they are cleared / invalidated first) and stores them when it ends
     (unless invalidated). This is the bandwidth cost of the pass, independent of
-    shader cost. Driven by the recorded GL calls (glBindFramebuffer, glClear*,
-    glInvalidateFramebuffer, glBlitFramebuffer/glReadPixels, ...); OpenGL ES only
-    for now (Vulkan loadOp/storeOp is not implemented).
+    shader cost. OpenGL ES: inferred from the recorded calls (glBindFramebuffer, glClear*,
+    glInvalidateFramebuffer, glBlitFramebuffer/glReadPixels, ...). Vulkan: read from the declared
+    loadOp / storeOp of each render pass (vkCmdBeginRenderPass, and vkCmdBeginRendering for dynamic
+    rendering, which has not been seen in a real capture yet); MSAA resolve targets are counted.
 
     Returns total traffic (load / store / wasted store MB, GB/s at 60 fps), a
     severity-sorted issue list and the heaviest passes with per-attachment

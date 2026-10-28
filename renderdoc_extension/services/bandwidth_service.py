@@ -25,6 +25,8 @@ import re
 
 
 from ..utils import Helpers
+from . import vk_passes as vk
+from .action_service import _sd_value
 from .gl_stream import collect_stream
 
 # ActionFlags values of this RenderDoc build (see pass_service)
@@ -250,46 +252,56 @@ def _covered(ops, predicate, role, stencil):
     return "clear" if "clear" in kinds else "invalidate"
 
 
+def _gl_attachments(p, textures):
+    """Load / store decisions of a GL pass from the clears and invalidates recorded around its draws"""
+    slots = []
+    for i, rid in enumerate(p["outputs"] or []):
+        if rid:
+            slots.append(("color%d" % i, rid))
+    if p["depth"]:
+        slots.append(("depth", p["depth"]))
+    atts = []
+    for role, rid in slots:
+        tex = textures.get(rid) or {}
+        stencil = role == "depth" and _has_stencil(tex.get("format", ""))
+        size = tex.get("width", 0) * tex.get("height", 0) * tex.get("bpp", 4) * max(1, tex.get("samples", 1))
+        how = _covered(p["ops"], lambda op: op["draws_before"] == 0, role, stencil)
+        load = {"needed": how is None, "skipped_by": how}
+        how = _covered(p["ops"], lambda op: op["draws_before"] == p["draws"], role, stencil)
+        store = {"needed": how is None, "skipped_by": how}
+        atts.append({
+            "role": role, "resource_id": rid, "name": tex.get("name", ""),
+            "width": tex.get("width"), "height": tex.get("height"), "format": tex.get("format"),
+            "samples": tex.get("samples", 1), "swapchain": bool(tex.get("swapchain")),
+            "bytes": size, "load": load, "store": store,
+        })
+    return atts
+
+
 def evaluate_passes(passes, textures, reads_after):
-    """Decide load/store per attachment and total the traffic.
+    """Total the traffic of tile passes and link them: where each load comes from, who reads each store.
+
+    A pass either carries "attachments" already decided (Vulkan: loadOp / storeOp) or gets them
+    derived from its clear / invalidate ops (GL).
 
     textures:    {rid: {"name", "width", "height", "format", "samples", "bpp", "swapchain"}}
     reads_after: {rid: [event ids where the texture is consumed (sampled / copied)]}
     """
     last_writer = {}
     for p in passes:
-        slots = []
-        for i, rid in enumerate(p["outputs"] or []):
-            if rid:
-                slots.append(("color%d" % i, rid))
-        if p["depth"]:
-            slots.append(("depth", p["depth"]))
-        atts = []
-        for role, rid in slots:
-            tex = textures.get(rid) or {}
-            stencil = role == "depth" and _has_stencil(tex.get("format", ""))
-            size = tex.get("width", 0) * tex.get("height", 0) * tex.get("bpp", 4) * max(1, tex.get("samples", 1))
-
-            how = _covered(p["ops"], lambda op: op["draws_before"] == 0, role, stencil)
-            load = {"needed": how is None, "skipped_by": how}
-            if how is None:
-                writer = last_writer.get(rid)
+        if p.get("attachments") is None:
+            p["attachments"] = _gl_attachments(p, textures)
+        for a in p["attachments"]:
+            load = a["load"]
+            if load["needed"]:
+                writer = last_writer.get(a["resource_id"])
                 if writer is None:
                     load["source"] = "none_in_frame"
                 else:
                     load["source"] = "pass %d (event %d)" % (writer["pass"], writer["end"])
                     load["source_pass"] = writer["pass"]
                     load["reopened"] = writer["pass"] < p["index"] - 1
-            how = _covered(p["ops"], lambda op: op["draws_before"] == p["draws"], role, stencil)
-            store = {"needed": how is None, "skipped_by": how}
-            atts.append({
-                "role": role, "resource_id": rid, "name": tex.get("name", ""),
-                "width": tex.get("width"), "height": tex.get("height"), "format": tex.get("format"),
-                "samples": tex.get("samples", 1), "swapchain": bool(tex.get("swapchain")),
-                "bytes": size, "load": load, "store": store,
-            })
-        p["attachments"] = atts
-        for a in atts:
+        for a in p["attachments"]:
             last_writer[a["resource_id"]] = {"pass": p["index"], "end": p["end"]}
 
     # a stored attachment is useful only if something reads it later
@@ -326,12 +338,19 @@ def _severity(nbytes):
     return "high" if mb >= 4 else ("medium" if mb >= 1 else "low")
 
 
+_DONT_CARE_STORE_GL = ("glInvalidateFramebuffer on it at the end of the pass "
+                       "(Unity: RenderBufferStoreAction.DontCare / URP store action). "
+                       "Ignore if it is a history buffer consumed next frame.")
+_DONT_CARE_STORE_VK = ("Set storeOp to DONT_CARE for it (Unity: RenderBufferStoreAction.DontCare / URP store action). "
+                       "Ignore if it is a history buffer consumed next frame.")
+
+
 def _target(a):
     """Stable identity of an attachment across captures (no resource ids)"""
     return "%s:%s %sx%s %s" % (a["role"], a["name"], a["width"], a["height"], a["format"])
 
 
-def find_issues(passes, syncs):
+def find_issues(passes, syncs, api="gl"):
     issues = []
     reopened = {}
     for p in passes:
@@ -341,13 +360,13 @@ def find_issues(passes, syncs):
             if a["store"]["needed"] and not a["store"]["read_later"]:
                 issues.append(dict(where, type="wasted_store", severity=_severity(a["bytes"]), bytes=a["bytes"], target=_target(a),
                                    detail="%s is written back to memory but never read afterwards" % label,
-                                   suggestion="glInvalidateFramebuffer on it at the end of the pass "
-                                              "(Unity: RenderBufferStoreAction.DontCare / URP store action). "
-                                              "Ignore if it is a history buffer consumed next frame."))
+                                   suggestion=(_DONT_CARE_STORE_VK if api == "vulkan" else _DONT_CARE_STORE_GL)))
             if a["load"]["needed"] and a["load"].get("source") == "none_in_frame":
                 issues.append(dict(where, type="load_without_clear", severity=_severity(a["bytes"]), bytes=a["bytes"], target=_target(a),
                                    detail="%s is loaded from memory at pass start but nothing in this frame wrote it" % label,
-                                   suggestion="Clear or invalidate it before the first draw so the tile load is skipped."))
+                                   suggestion=("Use loadOp CLEAR or DONT_CARE (Unity: RenderBufferLoadAction.Clear / DontCare) if the old contents "
+                                              "are not needed, so the tile load is skipped." if api == "vulkan" else
+                                              "Clear or invalidate it before the first draw so the tile load is skipped.")))
             if a["load"]["needed"] and a["load"].get("reopened"):
                 reopened.setdefault(p["index"], []).append((a, label))
             if a["store"]["needed"] and a["samples"] > 1:
@@ -479,39 +498,59 @@ class BandwidthService:
 
     def _analyze(self, controller, top_n, sort_by):
         api = Helpers.enum_name("GraphicsAPI", self.ctx.APIProps().pipelineType)
-        if api not in ("OpenGL", "OpenGLES"):
-            raise ValueError("analyze_pass_bandwidth supports OpenGL / GLES captures only (this one is %s)" % api)
+        return analyze_capture(controller, api, self.ctx.GetResourceName, top_n, sort_by)
 
+
+def analyze_capture(controller, api, name_of, top_n=30, sort_by="bytes"):
+    """Tile-pass bandwidth of the loaded capture. name_of(ResourceId) -> display name."""
+    is_vulkan = api == "Vulkan"
+    if not is_vulkan and api not in ("OpenGL", "OpenGLES"):
+        raise ValueError("analyze_pass_bandwidth supports OpenGL / GLES / Vulkan captures only (this one is %s)" % api)
+
+    textures = {}
+    rids = {}
+    for tex in controller.GetTextures():
+        rid = str(tex.resourceId)
+        fmt = str(tex.format.Name())
+        name = name_of(tex.resourceId)
+        # Not tex.creationFlags: for composite values (Vulkan swapchain images) building the Python enum
+        # access-violates qrenderdoc inside enum.py. RenderDoc names the presentable images itself.
+        swap = name.startswith(("Swapchain", "Backbuffer"))
+        textures[rid] = {
+            "name": name, "width": int(tex.width), "height": int(tex.height),
+            "format": fmt, "samples": int(tex.msSamp), "bpp": format_bytes_per_pixel(fmt), "swapchain": swap,
+        }
+        rids[rid] = tex.resourceId
+
+    problems = []
+    if is_vulkan:
+        sf = controller.GetStructuredFile()
+        model_chunks = [(str(c.name), _sd_value(c, limit=12)) for c in sf.chunks if str(c.name) in vk.MODEL_CALLS]
+        model = vk.build_model(model_chunks)
+        stream = collect_stream(controller, vk.STREAM_CALLS)
+        passes, problems = vk.build_vulkan_passes(stream, model, textures)
+        syncs = []
+    else:
         stream = collect_stream(controller, _RELEVANT)
-
-        textures = {}
-        rids = {}
-        for tex in controller.GetTextures():
-            rid = str(tex.resourceId)
-            fmt = str(tex.format.Name())
-            try:
-                swap = bool(int(tex.creationFlags) & 16)
-            except Exception:
-                swap = False
-            textures[rid] = {
-                "name": self.ctx.GetResourceName(tex.resourceId), "width": int(tex.width), "height": int(tex.height),
-                "format": fmt, "samples": int(tex.msSamp), "bpp": format_bytes_per_pixel(fmt), "swapchain": swap,
-            }
-            rids[rid] = tex.resourceId
-
         passes, syncs = build_passes(stream)
 
-        reads_after = {}
-        for p in passes:
-            for rid in list(p["outputs"] or []) + [p["depth"]]:
-                if rid and rid not in reads_after and rid in rids:
-                    reads_after[rid] = _read_events(controller, rids[rid])
+    reads_after = {}
+    for p in passes:
+        if p.get("attachments") is not None:
+            wanted = [a["resource_id"] for a in p["attachments"]]
+        else:
+            wanted = list(p["outputs"] or []) + [p["depth"]]
+        for rid in wanted:
+            if rid and rid not in reads_after and rid in rids:
+                reads_after[rid] = _read_events(controller, rids[rid])
 
-        evaluate_passes(passes, textures, reads_after)
-        issues = find_issues(passes, syncs)
-        data = summarize(passes, issues, top_n, sort_by)
-        data["api"] = api
-        return data
+    evaluate_passes(passes, textures, reads_after)
+    issues = find_issues(passes, syncs, api="vulkan" if is_vulkan else "gl")
+    data = summarize(passes, issues, top_n, sort_by)
+    data["api"] = api
+    if problems:
+        data["unparsed_passes"] = problems
+    return data
 
 
 def _read_events(controller, rid):
