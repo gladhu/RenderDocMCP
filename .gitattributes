@@ -1,0 +1,7 @@
+# Keep sources LF in the working tree too: with core.autocrlf=true the tree was CRLF while the index
+# was LF, which broke partial staging (git apply --cached).
+*.py   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.sh   text eol=lf
