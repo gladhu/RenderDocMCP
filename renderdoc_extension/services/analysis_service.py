@@ -117,8 +117,7 @@ class AnalysisService:
 
         def walk(actions, path):
             for action in actions:
-                # Read what is needed before descending: reading an action after the recursion
-                # returned access-violated qrenderdoc's replay thread (see stat_instancing_efficiency).
+                # Read what is needed before descending (see stat_instancing_efficiency)
                 name = action.GetName(sf)
                 children = action.children
                 is_draw = bool(action.flags & rd.ActionFlags.Drawcall)

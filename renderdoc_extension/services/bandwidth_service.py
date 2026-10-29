@@ -507,8 +507,8 @@ def texture_table(controller, name_of):
         rid = str(tex.resourceId)
         fmt = str(tex.format.Name())
         name = name_of(tex.resourceId)
-        # Not tex.creationFlags: for composite values (Vulkan swapchain images) building the Python enum
-        # access-violates qrenderdoc inside enum.py. RenderDoc names the presentable images itself.
+        # Swapchain images by RenderDoc's own name for them; tex.creationFlags would also work (the crash
+        # once blamed on it was the custom build's heap corruption, see CLAUDE.md).
         swap = name.startswith(("Swapchain", "Backbuffer"))
         textures[rid] = {
             "name": name, "width": int(tex.width), "height": int(tex.height),

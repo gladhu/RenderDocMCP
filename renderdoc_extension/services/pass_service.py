@@ -87,7 +87,7 @@ class PassService:
         return result["data"]
 
 
-# ActionFlags values for this RenderDoc build. getattr() on the SWIG enum crashes qrenderdoc.
+# ActionFlags values (integers: builds differ in how their SWIG enums reflect)
 _ACTION_FLAGS = {
     "Clear": 1,
     "Drawcall": 2,

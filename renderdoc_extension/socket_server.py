@@ -62,6 +62,10 @@ class MCPBridgeServer(QObject):
         self._running = False
         # Callable that runs a function on the UI thread (needed without PySide2)
         self._ui_invoke = ui_invoke
+        # The function handed to it, created once: qrenderdoc's C++ callback glue changes the
+        # callable's reference count without holding the GIL (std::function copy), so a bound
+        # method created per request and dropped by this thread right away could lose an update.
+        self._ui_entry = self._handle_on_ui_thread
 
         # Create IPC directory
         if not os.path.exists(IPC_DIR):
@@ -108,7 +112,7 @@ class MCPBridgeServer(QObject):
             if not self._busy and self._pending_requests():
                 self._busy = True
                 try:
-                    self._ui_invoke(self._handle_on_ui_thread)
+                    self._ui_invoke(self._ui_entry)
                 except Exception:
                     self._busy = False
                     traceback.print_exc()

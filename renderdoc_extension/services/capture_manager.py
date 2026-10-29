@@ -36,8 +36,7 @@ class CaptureManager:
         recorded = Helpers.recorded_gpu(result.get("filename"))
         result["recorded_gpu"] = recorded
 
-        # API type from the UI side (ctx.APIProps). controller.GetAPIProperties() on the replay thread
-        # access-violated qrenderdoc intermittently when it was the first replay call after a load.
+        # API type from the UI side (ctx.APIProps): no replay-thread round trip needed for a status check
         try:
             props = self.ctx.APIProps()
             result["api"] = Helpers.enum_name("GraphicsAPI", props.pipelineType)

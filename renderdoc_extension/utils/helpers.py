@@ -8,8 +8,8 @@ import threading
 import renderdoc as rd
 
 
-# Integer values for this RenderDoc build. Do not reflect SWIG enums here:
-# getattr/dir on them inside qrenderdoc crashes the process.
+# Integer values of the RenderDoc enums. Names come from these tables rather than from reflecting the
+# SWIG enums, which builds expose differently.
 _ENUM_TABLES = {
     "GraphicsAPI": {0: "D3D11", 1: "D3D12", 2: "OpenGL", 3: "Vulkan"},
     "ShaderStage": {0: "vertex", 1: "hull", 2: "domain", 3: "geometry", 4: "pixel", 5: "compute"},
@@ -52,15 +52,14 @@ _ENUM_TABLES = {
 class Helpers:
     """Common helper functions (static methods)"""
 
-    # Set by the facade. controller.GetAPIProperties() access-violated qrenderdoc intermittently on
-    # freshly loaded captures; the UI-side ctx.APIProps() has not.
+    # Set by the facade. API properties are read once per request from the UI-side ctx.APIProps().
     ctx = None
     _api_cache = None
 
     @staticmethod
     def refresh_api_props():
-        """Read ctx.APIProps() and keep it. Call on the UI thread (request entry) only: calling the Qt-side
-        context from the ReplayManager thread access-violated qrenderdoc on freshly loaded captures."""
+        """Read ctx.APIProps() and keep it. Called at request entry on the UI thread, so replay-thread
+        callbacks do not have to reach into the Qt-side context."""
         if Helpers.ctx is None:
             return
         try:
@@ -85,7 +84,7 @@ class Helpers:
         """SWIG enums in this RenderDoc build stringify as their integer.
 
         Float is ``0``, ColorTarget is ``32``, ARM is ``1``. ``enum_key`` is the
-        table name, not the SWIG type: reflecting those types crashes qrenderdoc.
+        table name, not the SWIG type (see _ENUM_TABLES).
         """
         try:
             if isinstance(value, int):
@@ -260,9 +259,7 @@ class Helpers:
         # Blend: one entry per render target; GL repeats the same state in every
         # slot, so collapse identical entries instead of reporting eight copies.
         try:
-            # Index a fresh GetColorBlends() result per element and read it at once:
-            # list()/for over the returned container (or holding it) crashed qrenderdoc's
-            # replay thread, the same way keeping GetVBuffers() in a variable did.
+            # Index a fresh GetColorBlends() result per element and read it at once
             rows = []
             for i in range(min(len(pipe.GetColorBlends()), 8)):
                 b = pipe.GetColorBlends()[i]

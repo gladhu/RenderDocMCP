@@ -461,8 +461,6 @@ class ResourceService:
                     "constant_buffers_per_stage": {}}
             try:
                 # GLES reports every attribute slot (32 here); keep the bound ones.
-                # Iterate the returned list directly: holding a reference to it
-                # crashed qrenderdoc's replay thread on this build.
                 slots = 0
                 for i, vb in enumerate(pipe.GetVBuffers()):
                     slots += 1

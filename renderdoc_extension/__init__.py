@@ -4,7 +4,6 @@ Provides socket server for external MCP server communication.
 """
 
 import os
-import tempfile
 
 from . import socket_server
 from . import request_handler
@@ -37,7 +36,9 @@ def register(version, ctx):
     _context = ctx
     try:
         import faulthandler
-        _fault = open(os.path.join(tempfile.gettempdir(), "rdmcp_fault.log"), "w")
+        if not os.path.isdir(socket_server.IPC_DIR):
+            os.makedirs(socket_server.IPC_DIR)
+        _fault = open(socket_server.FAULT_LOG, "w")
         faulthandler.enable(_fault, all_threads=True)
     except Exception:
         pass

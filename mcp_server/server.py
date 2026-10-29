@@ -369,10 +369,9 @@ def list_captures(directory: str) -> dict:
 
 
 _OPEN_CAPTURE_WAIT = 180.0  # seconds to wait for LoadCapture to finish
-_OPEN_CAPTURE_SETTLE = 20.0  # seconds to let the UI finish after the load
-# compare_captures fires a burst of replay calls right after each load; qrenderdoc crashed in the
-# first ~30 s of a load with a 20 s settle, so it waits longer
-_COMPARE_SETTLE = float(os.environ.get("RENDERDOC_MCP_COMPARE_SETTLE", "60"))
+# Extra wait after a load before the first replay call. The random crashes it was added for were heap
+# corruption in the custom 1.43 build's BlockInvoke (see CLAUDE.md), not a load race, so it is 0 by default.
+_OPEN_CAPTURE_SETTLE = _COMPARE_SETTLE = float(os.environ.get("RENDERDOC_MCP_COMPARE_SETTLE", "0"))
 
 
 @mcp.tool
@@ -421,8 +420,6 @@ def _open_capture(capture_path: str, use_remote: bool | None, settle: float) -> 
             "Capture loading timed out after %d seconds" % _OPEN_CAPTURE_WAIT
         )
 
-    # IsCaptureLoaded() turns true before the UI has finished initialising the capture;
-    # replay calls issued right away crashed qrenderdoc's ReplayManager thread.
     time.sleep(settle)
     status = bridge.call("get_capture_status")
 

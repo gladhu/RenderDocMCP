@@ -345,9 +345,8 @@ class ActionService:
 
             def walk(actions, path):
                 for action in actions:
-                    # Read everything this action needs BEFORE descending into its children, the way
-                    # Serializers.serialize_actions does. Reading action.flags after the recursion
-                    # returned access-violated qrenderdoc's replay thread on freshly loaded captures.
+                    # Read everything this action needs before descending into its children, the way
+                    # Serializers.serialize_actions does
                     children = action.children
                     flags = action.flags
                     name = action.GetName(sf)
@@ -435,8 +434,7 @@ class ActionService:
 
             def take(action):
                 # Copy into plain tuples right away. Only actions obtained from this
-                # controller are read: ctx.GetAction() hands back a UI-thread object,
-                # and reading its .events array from the replay thread crashed qrenderdoc.
+                # controller are read, not the UI-side ctx.GetAction() objects.
                 events = action.events
                 for i in range(len(events)):
                     collected.append((int(events[i].eventId), int(events[i].chunkIndex)))
@@ -526,7 +524,7 @@ class ActionService:
         return result["data"]
 
 
-# SDBasic values of this build (integers on purpose: reflecting SWIG enums crashes qrenderdoc)
+# SDBasic values (integers: builds differ in how their SWIG enums reflect)
 _SD_CHUNK, _SD_STRUCT, _SD_ARRAY, _SD_NULL, _SD_BUFFER, _SD_STRING, _SD_ENUM = 0, 1, 2, 3, 4, 5, 6
 _SD_UINT, _SD_SINT, _SD_FLOAT, _SD_BOOL, _SD_CHAR, _SD_RESOURCE, _SD_GPUADDR = 7, 8, 9, 10, 11, 12, 13
 
