@@ -5,6 +5,8 @@ Routes incoming requests to appropriate facade methods.
 
 import traceback
 
+from .utils import Helpers
+
 
 class RequestHandler:
     """Handles incoming MCP bridge requests"""
@@ -64,6 +66,7 @@ class RequestHandler:
         params = request.get("params", {})
 
         try:
+            Helpers.refresh_api_props()          # UI thread: replay callbacks read this cached copy
             if method not in self._methods:
                 return self._error_response(
                     request_id, -32601, "Method not found: %s" % method

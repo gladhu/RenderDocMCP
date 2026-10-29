@@ -3,6 +3,7 @@ Common helper functions for RenderDoc operations.
 """
 
 import re
+import threading
 
 import renderdoc as rd
 
@@ -54,10 +55,25 @@ class Helpers:
     # Set by the facade. controller.GetAPIProperties() access-violated qrenderdoc intermittently on
     # freshly loaded captures; the UI-side ctx.APIProps() has not.
     ctx = None
+    _api_cache = None
+
+    @staticmethod
+    def refresh_api_props():
+        """Read ctx.APIProps() and keep it. Call on the UI thread (request entry) only: calling the Qt-side
+        context from the ReplayManager thread access-violated qrenderdoc on freshly loaded captures."""
+        if Helpers.ctx is None:
+            return
+        try:
+            Helpers._api_cache = Helpers.ctx.APIProps() if Helpers.ctx.IsCaptureLoaded() else None
+        except Exception:
+            Helpers._api_cache = None
 
     @staticmethod
     def api_props(controller=None):
-        if Helpers.ctx is not None:
+        """API properties of the loaded capture; replay-thread callbacks get the value cached at request entry"""
+        if Helpers._api_cache is not None:
+            return Helpers._api_cache
+        if Helpers.ctx is not None and threading.current_thread() is threading.main_thread():
             try:
                 return Helpers.ctx.APIProps()
             except Exception:
