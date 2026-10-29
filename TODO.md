@@ -6,24 +6,26 @@ Each item says what is known, what is not, and how to tell it is done.
 
 ## P0 – stability
 
-- [ ] **qrenderdoc access-violates at random on the replay thread.**
-  Seen at: `controller.GetAPIProperties()`, `ctx.APIProps()`, the recursive action-tree walks
-  (`stat_instancing_efficiency`, `_select_draws`, `get_draw_calls`'s serializer), `gl_stream.take()` reading
-  `action.flags`, and `int(tex.creationFlags)`. Crash trace goes to `%TEMP%/rdmcp_fault.log`.
-  - Done so far (workarounds, not a root cause): API properties cached at request entry on the UI thread
-    (`Helpers.refresh_api_props`); action attributes read before recursing; swapchain detected by name instead of
-    `creationFlags`; GL state rebuilt from the call stream instead of per-draw replay.
-  - Not explained: the `gl_stream.take()` crash happens on a read that is already before the recursion, so the
-    "read before descending" theory does not cover it.
-  - Idea: do all action-tree reads once per request into plain Python data (one walk, no SWIG objects kept),
-    then run every analysis on that copy. Also try the standalone replay (`CreateRemoteServerConnection`), which has
-    been stable in every run so far, as the analysis backend instead of the GUI extension.
-  - Done when: 20 consecutive `open_capture` + full `e2e` runs (GLES and Vulkan) with 0 crashes.
-  - Not covered: the earlier "first call right after `open_capture` crashes" cases may have the same cause.
+- [x] **qrenderdoc access-violates at random on the replay thread.** Root cause found: the custom RenderDoc 1.43
+  build (`D:\Program Files\RenderDoc_AI_20260716`, Python 3.14, no PySide2) corrupts the Python heap in its
+  `BlockInvoke` callback glue. Not caused by any of the call patterns blamed before.
+  - Evidence: a request that only calls `ctx.Replay().BlockInvoke(lambda c: None)` and then runs GC crashes that
+    build by the 1st–2nd round (remote and local replay, callable pinned or not, replay-thread state kept or not);
+    the same request without `BlockInvoke` survives. Official RenderDoc 1.46 (Python 3.6, PySide2): 10/10 rounds
+    clean. The same `renderdoc.pyd` in a standalone Python (real phone replay, foreign-thread callbacks, debug
+    allocator) never crashes. Full-memory dumps show a double-freed 1-tuple in the tuple free list whose link
+    pointer was decremented by one, i.e. a non-atomic `dec` on freed memory; the disassembly of the glue shows
+    reference counts changed without the GIL (`std::function` copy, `ScopedFuncCall`).
+  - Resolution: use the official build (documented in README / CLAUDE.md). Acceptance: 20 consecutive relaunch +
+    `open_capture(use_remote=True)` (no settle wait) + full e2e runs on the phone (10 Vulkan, 10 GLES), 0 crashes.
+  - Kept as hardening: the poll thread hands the UI thread one pinned callable instead of a new bound method per
+    request; faulthandler output is per IPC directory (`fault.log`).
+  - Open: the custom build's glue needs fixing in its own source (`qrenderdoc/Code/pyrenderdoc`: `ConvertFunc`,
+    `ScopedFuncCall`, the `std::function` copy of `PyObjectRefCounter`, the `BlockInvoke` wrapper). Until then the
+    extension is not reliable there.
 
-- [ ] **`stat_instancing_efficiency` / `get_draw_calls` still use the walk pattern that crashed.**
-  Revisit after the item above; the snapshot calls `stat_instancing_efficiency` again, so a crash there loses a
-  whole snapshot (minutes of replay).
+- [x] **`stat_instancing_efficiency` / `get_draw_calls` still use the walk pattern that crashed.** Same root cause;
+  the walks are fine on the official build.
 
 ## P1 – correctness and coverage
 
@@ -54,33 +56,46 @@ Each item says what is known, what is not, and how to tell it is done.
   Profiler counters. Recommended before acting on a single number from the report.
 - [ ] **Report thresholds are rules of thumb** (draw calls 500 / 1000, avoidable traffic 10 % / 25 %, hidden pixels
   10 % / 25 %). Percentages are only comparable inside their own area.
+- [x] Fixed in the review of 2026-10-29: `cycles_per_pixel` was diluted by draws whose shader did not compile;
+  `diff_snapshots` raised when a shader had 0 pixels on one side; the snapshot / report only saw the first 50
+  bandwidth issues and the 5 longest batchable runs (totals now come from the extension); `compare_captures` lost
+  the first snapshot when the second capture failed; `open_capture` did not check that the requested file was the
+  one loaded; `get_cached_message` could not page large non-list fields (shader sources); late-Z waste could exceed
+  100 %; an empty `event_ids` list silently selected every draw.
 
 ## P2 – speed and usability
 
 - [ ] **`get_draw_coverage` is ~150 s for 839 draws** (95 % is `SetFrameEvent`, ~0.12 s/draw on the phone). Ideas:
   skip draws that cannot differ (same state and render target as the previous one), or cap per-marker sampling.
-- [ ] **A snapshot takes ~3 min on 839 draws, `compare_captures` ~7 min plus two loads**, and `open_capture` waits
-  60 s after each load (`RENDERDOC_MCP_COMPARE_SETTLE`). The wait was added for the random crashes; remove it once
-  the P0 item is solved.
-- [ ] **`frame_performance_report` returns many low-value actions** (e.g. one `wasted_store` per small temp buffer).
-  Group by marker / target, and show the top few per area.
-- [ ] **Tool descriptions are English, project docs are mixed Chinese / Japanese** (CLAUDE.md headings are Japanese).
-  Pick one language for the docs.
+  `estimate_shading_cost` / `estimate_geometry_cost` / `analyze_overdraw` now get coverage and shader sources from
+  one replay pass instead of two.
+- [x] **Settle wait after `open_capture`** removed (default 0; `RENDERDOC_MCP_COMPARE_SETTLE` still overrides). It had
+  been added for the crashes above. `open_capture` now waits for `capture_loading` to clear.
+- [ ] **A snapshot takes ~3 min on 839 draws, `compare_captures` ~7 min plus two loads.**
+- [x] **`frame_performance_report` returns many low-value actions.** Bandwidth issues keep the 3 heaviest per type;
+  the rest of a type become one "N more ..." action (`actions_folded`).
+- [x] **Docs language.** CLAUDE.md is Chinese now, like README; tool descriptions stay English.
 
 ## P3 – tooling and environment
 
 - [ ] **`scripts/capture_android.py` only works for debuggable apps** (uses `run-as`). Non-debuggable builds need the
   layer packaged into the APK, or `<queries><package android:name="org.renderdoc.renderdoccmd.arm64"/></queries>`
   in the manifest (not tried). arm64 only.
-- [ ] **Remote replay needs the phone's RenderDoc remote server started by hand** (`am start ... renderdoccmd remoteserver`)
-  when qrenderdoc was killed; a stale "Remote side of network connection is busy" needs `am force-stop` first.
-- [ ] **An elevated qrenderdoc started by the user cannot be closed from the agent session** and races for the IPC
-  files. `RENDERDOC_MCP_IPC_DIR` works around it, but both ends must be configured with the same value.
+- [ ] **Remote replay needs the phone's RenderDoc server of the same version.** The official 1.46 build installs its
+  APK when it connects; on Android 11+ the first start opens the "all files access" page — grant it on the phone or
+  with `adb shell appops set --uid org.renderdoc.renderdoccmd.arm64 MANAGE_EXTERNAL_STORAGE allow`. The custom 1.43
+  build and 1.46 share the package name and replace each other. A stale "Remote side of network connection is
+  busy" needs `am force-stop` first.
+- [ ] **Seen once: phone server drops the connection on the next `open_capture` after long replay work.** After
+  ~10 min of back-to-back full-frame replays (1.46, GLES capture), opening the Vulkan capture failed with
+  "Error opening capture" / "Socket unexpectedly disconnected". RenderDoc then shows a modal error on the UI thread and
+  the extension stops answering until qrenderdoc is restarted. A plain capture switch (GLES -> Vulkan -> GLES) does
+  not reproduce it. Idea: have `open_capture` detect a dead remote first (`CurrentRemote().Ping()`) and reconnect.
+- [x] **Two MCP clients or two qrenderdoc instances racing for the IPC files.** Each request now has its own
+  `request_<id>.json` / `response_<id>.json`, written to a temp name and renamed; the old single-slot protocol
+  is still served. `RENDERDOC_MCP_IPC_DIR` still separates instances.
 - [ ] **The MCP server process in a running Claude Code session is the old code** until the client restarts; tools
-  added later are invisible to it.
-- [ ] **Repo hygiene**: the working tree is CRLF while the index is LF (`core.autocrlf=true`), which broke partial
-  staging twice; add a `.gitattributes` (`* text=auto eol=lf` for `*.py`, `*.md`).
-- [ ] **No automated test suite in the repo.** The offline tests used for these features live in a scratch directory
-  (`%TEMP%/rdmcp_scratch/t_*.py`, `e2e.py`) and are not committed. Move the pure-function tests (`vk_passes`,
-  `gl_state`, `draw_analysis`, `compare`, `texture_analysis`, `bandwidth_service`) into `tests/` and keep `e2e.py` as
-  a documented manual check with its expected numbers.
+  added later are invisible to it (the extension still answers its old protocol).
+- [x] **Repo hygiene**: `.gitattributes` keeps `*.py` / `*.md` / `*.json` / `*.toml` / `*.sh` LF in the working tree.
+- [x] **Automated tests**: offline tests in `tests/` (`python -m unittest discover -s tests`, stdlib only);
+  `scripts/e2e_check.py gles|vulkan` is the manual end-to-end check with the expected numbers of the two captures.

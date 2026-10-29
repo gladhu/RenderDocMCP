@@ -5,7 +5,7 @@
 1. 所有图形 API 的 buffer content 获取
 2. 远程设备回放（`open_capture(use_remote=True)`，overlay / 直方图 / 读像素走真机 GPU）
 3. 移动端着色开销分析（coverage、malioc / aoc、材质 uniform 折叠）
-4. 无 PySide2 的自定义 RenderDoc 构建也能启动 MCP Bridge
+4. 无 PySide2 的自定义 RenderDoc 构建也能启动 MCP Bridge（但定制 1.43 构建本身不稳定，推荐官方构建，见"使用方法"）
 
 下文是原仓库 README 的中文版翻译，并已按当前 36 个 MCP 工具和 4 个 Prompt 补全。
 
@@ -92,7 +92,11 @@ uv tool update-shell  # 添加到 PATH
 3. 移动端抓帧：在界面左下角 Replay Context 选择手机（`adb://...`），再用 `open_capture(..., use_remote=True)`
 4. 通过 MCP 客户端访问数据
 
-> qrenderdoc 在回放线程里访问到 UI 线程的对象时会访问冲突直接退出（故障日志在 `%TEMP%\rdmcp_fault.log`）。开发扩展时踩到过两次：在回放线程里读 `ctx.GetAction(...).events`、把 `pipe.GetVBuffers()` 的返回值存进变量再遍历。需要 action 时请用 `controller.GetRootActions()` 取得的对象，遍历返回列表时直接 `for`。崩溃后需要重启 RenderDoc 并重新打开抓帧。另外，qrenderdoc 会一直持有已加载的旧版扩展模块，更新扩展后需要重启 RenderDoc。
+> **用哪个 RenderDoc**：用官方构建（实测 1.46，内置 Python 3.6 + PySide2）。定制构建 1.43（内嵌 Python 3.14，没有 PySide2）的 `BlockInvoke` Python 胶水层会破坏 Python 堆：哪怕回调什么都不做，调用几次之后 qrenderdoc 就会在不相干的地方（GC、`re`、import）访问冲突退出。同一个"空回调 + GC"压力测试，官方 1.46 连续 10 轮无崩溃，定制 1.43 在第 1–2 轮必崩；同一份 `renderdoc.pyd` 脱离 GUI 独立回放也不会崩。扩展在两种构建上都能运行，但在定制 1.43 上随时可能崩溃。
+>
+> 官方构建做远程回放时，手机上要装同版本的服务端 APK（连接时 RenderDoc 会自动安装）。Android 11+ 新装后第一次启动会跳到"所有文件访问"授权页，需要在手机上允许，或执行 `adb shell appops set --uid org.renderdoc.renderdoccmd.arm64 MANAGE_EXTERNAL_STORAGE allow`。两个版本的服务端包名相同，换用另一个构建连手机时会互相覆盖。
+>
+> 崩溃时 Python 侧的调用栈在 IPC 目录下的 `fault.log`（默认 `%TEMP%\renderdoc_mcp\fault.log`）。qrenderdoc 会一直持有已加载的旧版扩展模块，更新扩展后需要重启 RenderDoc。
 >
 > `open_capture` 之后不必固定等待：反复调用只读的 `get_replay_context`，再用 `get_capture_status` 探测回放线程，响应了就可以继续。
 
@@ -380,6 +384,21 @@ analyze_state_changes(marker_filter="DrawOpaqueObjects")
 get_post_vs_data(event_id=5503, stage="vsout", max_vertices=32)
 export_mesh(event_id=5503, output_path="D:\\tmp\\mesh.obj")
 ```
+
+## 测试
+
+- 离线单元测试（不需要 RenderDoc，纯函数部分：带宽、GL 状态跟踪、Vulkan pass、快照对比、报告、几何/过度绘制、贴图、结果缓存、SPIR-V）：
+
+  ```
+  .venv\Scripts\python.exe -m unittest discover -s tests
+  ```
+
+- 端到端检查（需要 RenderDoc 已打开对应抓帧，期望值写在脚本里）：
+
+  ```
+  .venv\Scripts\python.exe scripts\e2e_check.py gles     # 8.057.001.108
+  .venv\Scripts\python.exe scripts\e2e_check.py vulkan   # test-Vulkan_02
+  ```
 
 ## 系统要求
 
