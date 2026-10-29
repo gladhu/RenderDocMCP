@@ -61,7 +61,7 @@ def _bandwidth(snap, actions, scorecard):
         if not mb and i["type"] != "glFinish":
             continue
         actions.append({
-            "area": "bandwidth",
+            "area": "bandwidth", "kind": i["type"],
             "priority": _priority_by_pct(pct) if mb else "medium",
             "title": "%s: %s" % (i["type"], i.get("target") or i.get("detail", "")[:70]),
             "impact": "~%.2f MB/frame (%.1f%% of attachment traffic)" % (mb, pct) if mb else "pipeline stall",
@@ -268,6 +268,41 @@ def _risks(snap, actions, scorecard):
 
 # ==================== entry point ====================
 
+# Bandwidth issues kept as separate actions per issue type; the rest of that type become one action
+_PER_KIND = 3
+
+
+def _fold_bandwidth(actions):
+    """Keep the heaviest few bandwidth actions of each issue type and fold the rest into one per type.
+
+    A frame with many small render targets produces one wasted_store per target; listed one by one
+    they push everything else off the action list. Returns the number of actions folded away.
+    """
+    by_kind, rest = {}, []
+    for a in actions:
+        (by_kind.setdefault(a["kind"], []) if a.get("kind") else rest).append(a)
+    folded = 0
+    for kind, items in by_kind.items():
+        items.sort(key=lambda a: -a["impact_pct"])
+        rest.extend(items[:_PER_KIND])
+        tail = items[_PER_KIND:]
+        if len(tail) < 2:
+            rest.extend(tail)
+            continue
+        folded += len(tail) - 1
+        pct = round(sum(a["impact_pct"] for a in tail), 1)
+        passes = sorted(set(a["where"]["tile_pass"] for a in tail if "tile_pass" in a["where"]))
+        rest.append({
+            "area": "bandwidth", "kind": kind, "priority": _priority_by_pct(pct),
+            "title": "%d more %s issues" % (len(tail), kind),
+            "impact": "%.1f%% of attachment traffic together" % pct, "impact_pct": pct,
+            "where": {"tile_passes": passes[:20]} if passes else {},
+            "evidence": "; ".join(a["title"].split(": ", 1)[-1] for a in tail[:8]) + (" ..." if len(tail) > 8 else ""),
+            "how": tail[0]["how"],
+        })
+    actions[:] = rest
+    return folded
+
 
 def build_report(snap, top_actions=15):
     actions, scorecard = [], []
@@ -277,6 +312,7 @@ def build_report(snap, top_actions=15):
     _textures(snap, actions, scorecard)
     _submission(snap, actions, scorecard)
     _risks(snap, actions, scorecard)
+    folded = _fold_bandwidth(actions)
 
     actions.sort(key=lambda a: (_PRIORITY_RANK.get(a["priority"], 9), -a["impact_pct"]))
     for n, a in enumerate(actions, 1):
@@ -300,6 +336,7 @@ def build_report(snap, top_actions=15):
         "scorecard": scorecard,
         "actions": actions[:top_actions],
         "actions_total": len(actions),
+        "actions_folded": folded,
         "details": {
             "frame": snap.get("frame"),
             "gpu_notes": [r.get("detail") for r in (snap.get("risks") or {}).get("items", []) if r.get("category") == "gpu_specific"],

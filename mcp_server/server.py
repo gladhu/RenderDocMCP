@@ -1541,7 +1541,9 @@ def frame_performance_report(
         include_shading_cost / compiler / gpu: as snapshot_metrics
         include_draw_analysis: add vertex budget (estimate_geometry_cost) and overdraw (analyze_overdraw)
             findings; a snapshot taken without it simply has no such sections
-        top_actions: how many actions to return (the rest are counted in actions_total)
+        top_actions: how many actions to return (the rest are counted in actions_total). Bandwidth
+            issues keep the 3 heaviest of each type; the rest of a type become one "N more ..." action
+            (actions_folded counts the entries merged away)
     """
     if snapshot:
         snap = compare.load_snapshot(snapshot, save_dir)
