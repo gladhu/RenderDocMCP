@@ -47,7 +47,8 @@ def find_malioc() -> str:
 
 def malioc_version() -> str:
     out = subprocess.run([find_malioc(), "--version"], capture_output=True, text=True, timeout=30)
-    return out.stdout.strip().splitlines()[0] if out.stdout else "unknown"
+    lines = out.stdout.strip().splitlines()
+    return lines[0] if lines else "unknown"
 
 
 def _summarize(data: dict) -> dict:

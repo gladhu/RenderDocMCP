@@ -70,6 +70,8 @@ def _bandwidth(snap, actions, scorecard):
             "evidence": i.get("detail", ""),
             "how": i.get("suggestion", ""),
         })
+    if bw.get("avoidable_mb") is not None:      # over all issues, not only the 50 stored ones
+        avoidable = bw["avoidable_mb"]
     avoidable = min(avoidable, traffic)
     share = avoidable / traffic if traffic else None
     scorecard.append({
@@ -181,10 +183,12 @@ def _draw_analysis(snap, actions, scorecard):
             "value": None if ratio is None else round(100 * ratio, 1), "assessment": _assess(ratio, _OCCLUDED_PIXELS),
             "note": "%d hidden of %d; transparent pixels %d" % (t["opaque_rejected"], opaque_all, t["transparent_pixels"]),
         })
+        # shading cycles count passed pixels only; the wasted ones come on top
+        all_cycles = cycles + (t.get("late_z_wasted_cycles") or 0)
         for f in over["findings"]:
             impact_pct = f["impact_pct"]
             if f["type"] == "late_z_waste" and cycles:
-                impact_pct = _pct(f["wasted_cycles"], cycles)
+                impact_pct = _pct(f["wasted_cycles"], all_cycles)
                 impact = "%s (%.1f%% of fragment cycles)" % (f["impact"], impact_pct)
             else:
                 impact = f["impact"]

@@ -112,7 +112,11 @@ def _defaulted_int(value: Any) -> int:
 def _defaulted_int_list(value: Any) -> list[int]:
     if _is_blank(value):
         raise PydanticUseDefault()
-    return _as_int_list(value)
+    values = _as_int_list(value)
+    if not values:
+        # an empty selection would otherwise mean "no filter" and replay every draw
+        raise ValueError("空列表没有意义：省略该参数表示全部，否则至少给一个整数")
+    return values
 
 
 def _required_stage(value: Any) -> str:

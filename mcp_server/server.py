@@ -413,7 +413,7 @@ def _open_capture(capture_path: str, use_remote: bool | None, settle: float) -> 
         # get_replay_context only reads UI state; get_capture_status would invoke the
         # replay thread while the capture is still being brought up.
         ctx = bridge.call("get_replay_context")
-        if ctx.get("capture_loaded"):
+        if ctx.get("capture_loaded") and not ctx.get("capture_loading"):
             break
     else:
         raise RenderDocBridgeError(
@@ -422,7 +422,13 @@ def _open_capture(capture_path: str, use_remote: bool | None, settle: float) -> 
 
     time.sleep(settle)
     status = bridge.call("get_capture_status")
+    # the loaded file must be the requested one, not the previous capture that was still open
+    loaded = status.get("filename") or ""
+    if loaded and os.path.normcase(os.path.abspath(loaded)) != os.path.normcase(os.path.abspath(capture_path)):
+        raise RenderDocBridgeError("Expected %s to be loaded, but RenderDoc has %s" % (capture_path, loaded))
 
+    # cached large results (get_cached_message) belong to the previous capture
+    result_cache.clear()
     result.pop("loading", None)
     result["api"] = status.get("api")
     if status.get("vendor"):
@@ -432,7 +438,7 @@ def _open_capture(capture_path: str, use_remote: bool | None, settle: float) -> 
 
 # ==================== Performance analysis ====================
 
-# Long-running analysis calls replay many events; give them more time than the default 30s
+# Long-running analysis calls replay many events; give them more time than the default 120 s
 _LONG_TIMEOUT = 1800.0
 
 
@@ -699,7 +705,7 @@ def _shading_result(coverage: dict, data: dict, reports: dict, compiler: str, gp
         report = reports.get(sid) if sid else None
         cyc = _report_cost(report)
         g = groups.setdefault(draw["pixel_shader"], {
-            "pixel_shader": draw["pixel_shader"], "draw_count": 0, "pixels": 0, "occluded_pixels": 0,
+            "pixel_shader": draw["pixel_shader"], "draw_count": 0, "pixels": 0, "costed_pixels": 0, "occluded_pixels": 0,
             "cycles": 0.0, "textures": {}, "sample_event_ids": [], "late_zs_draws": 0,
             "work_registers": set(), "unknown_cost_draws": 0, "shader_hash": hash_of.get(draw["event_id"]),
         })
@@ -709,6 +715,7 @@ def _shading_result(coverage: dict, data: dict, reports: dict, compiler: str, gp
         if cyc is None:
             g["unknown_cost_draws"] += 1
         else:
+            g["costed_pixels"] += draw["passed"]
             g["cycles"] += draw["passed"] * cyc
             total_cycles += draw["passed"] * cyc
             if report.get("uses_late_zs_update") or report.get("modifies_coverage"):  # mali only
@@ -723,7 +730,8 @@ def _shading_result(coverage: dict, data: dict, reports: dict, compiler: str, gp
 
     rows = []
     for g in groups.values():
-        g["cycles_per_pixel"] = round(g["cycles"] / g["pixels"], 3) if g["pixels"] else None
+        # only pixels of draws whose cost is known: draws malioc could not compile would dilute it
+        g["cycles_per_pixel"] = round(g["cycles"] / g["costed_pixels"], 3) if g["costed_pixels"] else None
         g["share_of_cycles"] = round(g["cycles"] / total_cycles, 4) if total_cycles else None
         g["cycles"] = round(g["cycles"])
         g["textures"] = [n for n, _ in sorted(g["textures"].items(), key=lambda kv: -kv[1])[:4]]
@@ -762,7 +770,7 @@ def estimate_geometry_cost(
     Findings:
     - vertex_heavy_pass: one marker submits >= 20% of all vertices (shadow passes repeat casters
       per cascade, so they usually show up here)
-    - micro_triangles: a large share of triangles rasterise to fewer than 8 pixels each, which
+    - micro_triangles: a large share of triangles rasterise to fewer than 4 pixels each, which
       wastes quad lanes (needs LODs / impostors). Backface-culled triangles also lower the figure.
     Vertex counts are index counts (upper bound); vertex cycles are relative and not comparable
     with fragment cycles. Needs remote replay for mobile captures (pixel coverage per draw).
@@ -954,7 +962,8 @@ def analyze_pass_bandwidth(
     rendering, which has not been seen in a real capture yet); MSAA resolve targets are counted.
 
     Returns total traffic (load / store / wasted store MB, GB/s at 60 fps), a
-    severity-sorted issue list and the heaviest passes with per-attachment
+    severity-sorted issue list (at most max(50, top_n) entries; issue_count, issues_by_type and
+    avoidable_mb cover all of them) and the heaviest passes with per-attachment
     decisions. Issue types:
     - wasted_store: written back to memory but never read again (depth is the usual one)
     - load_without_clear: loaded at pass start although nothing wrote it this frame
@@ -1391,7 +1400,8 @@ def get_cached_message(
     Args:
         message_id: The id from the "cached" response
         page / page_size: 1-based page and items per page (max 200)
-        collection: Which list to page when the result has several (default: the largest)
+        collection: Which view to page (see available_views): a list, paged by item (default: the
+            largest list), or a large non-list field such as a shader source, paged by line
         search: Case-insensitive substring; only items containing it are returned
     The cache lives in the MCP server process (last 64 results); an evicted or
     restarted-away id has to be re-fetched by re-running the original tool.
@@ -1592,11 +1602,12 @@ def compare_captures(
     if name_a == name_b:
         name_a, name_b = name_a + "_before", name_b + "_after"
 
-    snaps = []
+    snaps, paths = [], []
     for name, path in ((name_a, before_path), (name_b, after_path)):
         _open_capture(path, use_remote, _COMPARE_SETTLE)
         snaps.append(_collect_snapshot(name, include_shading_cost, compiler, gpu, include_draw_analysis))
-    paths = [compare.save_snapshot(snap, save_dir) for snap in snaps]
+        # saved right away: if the second capture fails, the first one's minutes of replay are kept
+        paths.append(compare.save_snapshot(snaps[-1], save_dir))
     result = compare.diff_snapshots(snaps[0], snaps[1])
     result["snapshot_paths"] = paths
     return result

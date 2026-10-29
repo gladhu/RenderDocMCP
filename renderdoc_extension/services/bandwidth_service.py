@@ -460,12 +460,29 @@ def summarize(passes, issues, top_n, sort_by):
             "gb_per_s_at_60fps": round(traffic * 60 / (1024.0 * _MB), 2),
         },
         "issue_count": len(issues),
-        "issues": [dict(i, mb=_mb(i["bytes"])) for i in issues[:50]],
+        # totals over every issue; "issues" lists at most max(50, top_n) of them
+        "issues_by_type": _issue_totals(issues),
+        "avoidable_mb": _mb(sum(i["bytes"] for i in issues if i["type"] in _AVOIDABLE)),
+        "issues": [dict(i, mb=_mb(i["bytes"])) for i in issues[:max(50, top_n)]],
         "passes": out_passes,
         "passes_returned": len(out_passes),
         "note": "Upper bound: whole attachments are counted, not the tiles actually touched, and the GPU's "
                 "framebuffer compression is ignored. Use it to rank passes and to compare before/after.",
     }
+
+
+# Issue types whose traffic a fix removes outright (as opposed to a stall or a hint)
+_AVOIDABLE = ("wasted_store", "load_without_clear", "render_target_reopened")
+
+
+def _issue_totals(issues):
+    """{issue type: {"count", "mb"}} over all issues"""
+    out = {}
+    for i in issues:
+        t = out.setdefault(i["type"], {"count": 0, "bytes": 0})
+        t["count"] += 1
+        t["bytes"] += i["bytes"]
+    return dict((k, {"count": v["count"], "mb": _mb(v["bytes"])}) for k, v in out.items())
 
 
 # ==================== RenderDoc side ====================

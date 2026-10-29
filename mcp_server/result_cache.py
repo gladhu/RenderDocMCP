@@ -85,8 +85,37 @@ class MessageCache:
 _cache = MessageCache()
 
 
+def _big_fields(payload: Any) -> dict[str, Any]:
+    """顶层字典里过大的非列表字段(按行翻页的视图), 如着色器源码、管线状态。"""
+    if not isinstance(payload, dict):
+        return {}
+    return {k: v for k, v in payload.items()
+            if not isinstance(v, list) and len(_dumps(v)) > PREVIEW_ITEM_CHARS}
+
+
 def _views(payload: Any) -> list[dict]:
-    return [{"key": k, "type": "list", "count": len(v)} for k, v in _lists_of(payload).items()]
+    views = [{"key": k, "type": "list", "count": len(v)} for k, v in _lists_of(payload).items()]
+    views += [{"key": k, "type": "lines", "chars": len(_dumps(v))} for k, v in _big_fields(payload).items()]
+    return views
+
+
+def _page_lines(obj: Any, page: int, page_size: int, search: str | None, result: dict, name: str) -> dict:
+    """把对象格式化成 JSON(字符串原样)后按行翻页。"""
+    text = obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False, indent=1, default=str)
+    lines = text.splitlines()
+    if search:
+        needle = search.lower()
+        lines = [ln for ln in lines if needle in ln.lower()]
+        result["search"] = {"query": search, "matches": len(lines)}
+    total = len(lines)
+    size = page_size * 4
+    pages = max(1, -(-total // size))
+    start = (page - 1) * size
+    result.update({"collection": name, "page": page, "total_lines": total, "total_pages": pages,
+                   "lines": lines[start:start + size]})
+    if page < pages:
+        result["next_page"] = page + 1
+    return result
 
 
 def _shrink(item: Any) -> Any:
@@ -148,8 +177,11 @@ def query_cached_message(message_id: str, page: int = 1, page_size: int = DEFAUL
         "approx_chars": entry["chars"],
         "available_views": _views(payload),
     }
-    if collection is not None and collection not in lists:
-        raise ValueError("Unknown collection %r; available: %s" % (collection, sorted(lists) or "none"))
+    big = _big_fields(payload)
+    if collection is not None and collection not in lists and collection not in big:
+        raise ValueError("Unknown collection %r; available: %s" % (collection, sorted(lists) + sorted(big) or "none"))
+    if collection in big:
+        return _page_lines(big[collection], page, page_size, search, result, collection)
     if lists:
         key = collection or max(lists, key=lambda k: len(lists[k]))
         items = lists[key]
@@ -169,27 +201,15 @@ def query_cached_message(message_id: str, page: int = 1, page_size: int = DEFAUL
             "items": items[start:start + page_size],
         })
         if isinstance(payload, dict):
-            result["other_fields"] = {k: v for k, v in payload.items()
-                                      if k not in lists and len(_dumps(v)) <= PREVIEW_ITEM_CHARS}
+            result["other_fields"] = {
+                k: (v if k not in big else "<%d chars; page it with collection=%r>" % (len(_dumps(v)), k))
+                for k, v in payload.items() if k not in lists}
         if page < pages:
             result["next_page"] = page + 1
         return result
 
     # 没有列表字段: 把格式化后的 JSON 按行翻页
-    lines = json.dumps(payload, ensure_ascii=False, indent=1, default=str).splitlines()
-    if search:
-        needle = search.lower()
-        lines = [ln for ln in lines if needle in ln.lower()]
-        result["search"] = {"query": search, "matches": len(lines)}
-    total = len(lines)
-    pages = max(1, -(-total // (page_size * 4)))
-    size = page_size * 4
-    start = (page - 1) * size
-    result.update({"collection": "(lines)", "page": page, "total_lines": total, "total_pages": pages,
-                   "lines": lines[start:start + size]})
-    if page < pages:
-        result["next_page"] = page + 1
-    return result
+    return _page_lines(payload, page, page_size, search, result, "(lines)")
 
 
 def clear() -> None:

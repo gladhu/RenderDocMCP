@@ -110,8 +110,9 @@ def build_snapshot(name, status, summary, pass_list, instancing, state, textures
             "blend_changes": changes.get("blend"),
             "depth_changes": changes.get("depth"),
             "cull_changes": changes.get("cull"),
-            "batching_opportunities": len(state.get("batching_opportunities", [])),
-            "batchable_draws": sum(o.get("count", 0) for o in state.get("batching_opportunities", [])),
+            "batching_opportunities": state.get("batching_run_count", len(state.get("batching_opportunities", []))),
+            "batchable_draws": state.get("batchable_draws",
+                                         sum(o.get("count", 0) for o in state.get("batching_opportunities", []))),
             "batching": sorted(state.get("batching_opportunities", []), key=lambda o: -o.get("count", 0))[:10],
         },
         "memory": {
@@ -126,15 +127,19 @@ def build_snapshot(name, status, summary, pass_list, instancing, state, textures
     }
 
     total = bandwidth.get("total", {})
-    by_type = {}
-    for i in bandwidth.get("issues", []):
-        by_type[i["type"]] = by_type.get(i["type"], 0) + 1
+    # totals over all issues when the extension provides them; "issues" itself is capped at 50
+    by_type = dict((k, v["count"]) for k, v in bandwidth.get("issues_by_type", {}).items())
+    if not by_type:
+        for i in bandwidth.get("issues", []):
+            by_type[i["type"]] = by_type.get(i["type"], 0) + 1
     snap["bandwidth"] = {
         "tile_passes": bandwidth.get("pass_count"),
         "load_mb": total.get("load_mb"), "store_mb": total.get("store_mb"),
         "traffic_mb": total.get("traffic_mb"), "wasted_store_mb": total.get("wasted_store_mb"),
         "gb_per_s_at_60fps": total.get("gb_per_s_at_60fps"),
         "issues_by_type": by_type,
+        "issue_count": bandwidth.get("issue_count"),
+        "avoidable_mb": bandwidth.get("avoidable_mb"),
         "issues": [{
             "type": i["type"], "severity": i["severity"], "mb": i.get("mb", 0),
             "target": i.get("target", ""), "marker": _tail(i.get("marker", "")), "detail": i.get("detail", ""),
@@ -156,7 +161,7 @@ def build_snapshot(name, status, summary, pass_list, instancing, state, textures
             "shaders": [{
                 "pixel_shader": s["pixel_shader"], "shader_hash": s.get("shader_hash"),
                 "draw_count": s["draw_count"], "pixels": s["pixels"],
-                "occluded_pixels": s["occluded_pixels"], "cycles": s["cycles"],
+                "occluded_pixels": s["occluded_pixels"], "cycles": s["cycles"], "costed_pixels": s.get("costed_pixels", s["pixels"]),
                 "cycles_per_pixel": s["cycles_per_pixel"], "textures": s.get("textures", []),
                 "late_zs_draws": s.get("late_zs_draws", 0), "sample_event_ids": s.get("sample_event_ids", []),
                 "work_registers": s.get("work_registers", []),
@@ -342,14 +347,22 @@ def _diff_shading(a, b):
     for x, y, how in pairs:
         if y["cycles"] == x["cycles"]:
             continue
-        # cycles = pixels x cycles/pixel, so the change splits exactly into
+        # cycles = costed pixels x cycles/pixel, so the change splits exactly into
         #   shader_cost_delta: the shader itself got cheaper / dearer (at the "after" pixel count)
         #   coverage_delta:    it simply covers more / fewer pixels in this view
+        # A side with no shaded pixels has no cycles/pixel; the other side's value stands in, so the
+        # whole change counts as coverage.
+        cx, cy = x["cycles_per_pixel"], y["cycles_per_pixel"]
+        cx = cy if cx is None else cx
+        cy = cx if cy is None else cy
+        if cx is None:
+            continue
+        px, py = x.get("costed_pixels", x["pixels"]), y.get("costed_pixels", y["pixels"])
         changed.append({
             "pixel_shader": x["pixel_shader"], "textures": x.get("textures", []), "matched_by": how,
             "cycles": [x["cycles"], y["cycles"]], "delta_cycles": y["cycles"] - x["cycles"],
-            "shader_cost_delta": round((y["cycles_per_pixel"] - x["cycles_per_pixel"]) * y["pixels"]),
-            "coverage_delta": round((y["pixels"] - x["pixels"]) * x["cycles_per_pixel"]),
+            "shader_cost_delta": round((cy - cx) * py),
+            "coverage_delta": round((py - px) * cx),
             "cycles_per_pixel": [x["cycles_per_pixel"], y["cycles_per_pixel"]],
             "pixels": [x["pixels"], y["pixels"]],
             "draws": [x["draw_count"], y["draw_count"]],

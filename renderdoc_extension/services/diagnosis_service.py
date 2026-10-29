@@ -304,6 +304,9 @@ def _state_report(analyzed, total, change_counts, unavailable, runs, method):
         "change_counts": change_counts,
         "unavailable": unavailable,
         "batching_opportunities": runs[:5],
+        # over every run, not just the five listed
+        "batching_run_count": len(runs),
+        "batchable_draws": sum(r["count"] for r in runs),
         "suggestions": suggestions,
         "method": method,
     }
