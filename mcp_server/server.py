@@ -583,6 +583,19 @@ def _shader_cost(selection: dict[str, object], stage: str, compiler: str, gpu: s
     return data, _compile_sources(data, stage, compiler, gpu)
 
 
+def _coverage_and_cost(selection: dict[str, object], stage: str, compiler: str, gpu: str | None,
+                       fold_uniforms: bool, **coverage_options) -> tuple[dict, dict, dict]:
+    """Pixel coverage and one stage's shader sources from ONE replay pass, then the offline-compiler cost.
+
+    A SetFrameEvent per draw dominates both calls, so a separate get_shader_sources would double the time.
+    Returns (coverage, sources of that stage, compiler reports by source id).
+    """
+    params = dict(selection, with_sources={"stages": [stage], "fold_uniforms": fold_uniforms}, **coverage_options)
+    coverage = bridge.call("get_draw_coverage", params, timeout=_LONG_TIMEOUT)
+    data = coverage["sources"][stage]
+    return coverage, data, _compile_sources(data, stage, compiler, gpu)
+
+
 def _compile_sources(data: dict, stage: str, compiler: str, gpu: str | None) -> dict:
     """Offline-compile the sources of one get_shader_sources result"""
     module, default_gpu, _, _ = _compiler(compiler)
@@ -688,8 +701,7 @@ def estimate_shading_cost(
     _, default_gpu, _, _ = _compiler(compiler)
     gpu = gpu or default_gpu
     selection = _selection(event_ids, marker_filter, event_id_min, event_id_max)
-    coverage = bridge.call("get_draw_coverage", selection, timeout=_LONG_TIMEOUT)
-    data, reports = _shader_cost(selection, "pixel", compiler, gpu, fold_uniforms, None)
+    coverage, data, reports = _coverage_and_cost(selection, "pixel", compiler, gpu, fold_uniforms)
     return _shading_result(coverage, data, reports, compiler, gpu, top_n)
 
 
@@ -776,8 +788,7 @@ def estimate_geometry_cost(
     with fragment cycles. Needs remote replay for mobile captures (pixel coverage per draw).
     """
     selection = _selection(event_ids, marker_filter, event_id_min, event_id_max)
-    coverage = bridge.call("get_draw_coverage", selection, timeout=_LONG_TIMEOUT)
-    data, reports = _shader_cost(selection, "vertex", compiler, gpu, fold_uniforms, None)
+    coverage, data, reports = _coverage_and_cost(selection, "vertex", compiler, gpu, fold_uniforms)
     return _geometry_result(coverage, data, reports, compiler, gpu, int(top_n))
 
 
@@ -849,9 +860,7 @@ def analyze_overdraw(
     offline compiler for the late-Z flags (Mali only; Adreno draws count as opaque).
     """
     selection = _selection(event_ids, marker_filter, event_id_min, event_id_max)
-    params = dict(selection, with_state=True)
-    coverage = bridge.call("get_draw_coverage", params, timeout=_LONG_TIMEOUT)
-    data, reports = _shader_cost(selection, "pixel", compiler, gpu, fold_uniforms, None)
+    coverage, data, reports = _coverage_and_cost(selection, "pixel", compiler, gpu, fold_uniforms, with_state=True)
     return _overdraw_result(coverage, data, reports, compiler, gpu, int(top_n))
 
 
