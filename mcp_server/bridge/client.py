@@ -14,9 +14,6 @@ from typing import Any
 # IPC directory (must match renderdoc_extension/socket_server.py)
 # RENDERDOC_MCP_IPC_DIR lets a second RenderDoc instance (e.g. an elevated one) use its own channel
 IPC_DIR = os.environ.get("RENDERDOC_MCP_IPC_DIR") or os.path.join(tempfile.gettempdir(), "renderdoc_mcp")
-REQUEST_FILE = os.path.join(IPC_DIR, "request.json")
-RESPONSE_FILE = os.path.join(IPC_DIR, "response.json")
-LOCK_FILE = os.path.join(IPC_DIR, "lock")
 
 
 class RenderDocBridgeError(Exception):
@@ -26,7 +23,11 @@ class RenderDocBridgeError(Exception):
 
 
 class RenderDocBridge:
-    """Client for communicating with RenderDoc extension via file-based IPC"""
+    """Client for communicating with RenderDoc extension via file-based IPC.
+
+    Each call writes request_<id>.json and waits for response_<id>.json (both renamed into place
+    once complete), so several MCP server processes can share one RenderDoc instance.
+    """
 
     def __init__(self, host: str = "127.0.0.1", port: int = 19876):
         # host/port are kept for API compatibility but not used
@@ -37,75 +38,67 @@ class RenderDocBridge:
     def call(self, method: str, params: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
         """Call a method on the RenderDoc extension (timeout in seconds, default self.timeout)"""
         timeout = self.timeout if timeout is None else timeout
-        # Check if IPC directory exists
-        if not os.path.exists(IPC_DIR):
+        if not os.path.isdir(IPC_DIR):
             raise RenderDocBridgeError(
-                f"Cannot connect to RenderDoc MCP Bridge at {self.host}:{self.port}. "
+                f"No RenderDoc MCP Bridge found (IPC directory {IPC_DIR} does not exist). "
                 "Make sure RenderDoc is running with the MCP Bridge extension loaded."
             )
 
-        request = {
-            "id": str(uuid.uuid4()),
-            "method": method,
-            "params": params or {},
-        }
+        request_id = uuid.uuid4().hex
+        request = {"id": request_id, "method": method, "params": params or {}}
+        request_file = os.path.join(IPC_DIR, f"request_{request_id}.json")
+        response_file = os.path.join(IPC_DIR, f"response_{request_id}.json")
 
         try:
-            # Clean up any stale response file
-            if os.path.exists(RESPONSE_FILE):
-                os.remove(RESPONSE_FILE)
-
-            # Create lock file to signal we're writing
-            with open(LOCK_FILE, "w") as f:
-                f.write("lock")
-
-            # Write request
-            with open(REQUEST_FILE, "w", encoding="utf-8") as f:
+            # Write under a name the extension ignores, then rename: it never reads a partial request
+            with open(request_file + ".tmp", "w", encoding="utf-8") as f:
                 json.dump(request, f)
+            os.replace(request_file + ".tmp", request_file)
 
-            # Remove lock file to signal write complete
-            os.remove(LOCK_FILE)
-
-            # Wait for response
             start_time = time.time()
-            while True:
-                if os.path.exists(RESPONSE_FILE):
-                    # Small delay to ensure file is fully written
-                    time.sleep(0.01)
-
-                    # Read response. The file is visible while the extension is still streaming a big
-                    # result into it, so a half-written document is retried, not treated as an error.
-                    try:
-                        with open(RESPONSE_FILE, "r", encoding="utf-8") as f:
-                            response = json.load(f)
-                    except ValueError:
-                        if time.time() - start_time > timeout:
-                            raise
-                        time.sleep(0.05)
-                        continue
-
-                    # Clean up response file
-                    os.remove(RESPONSE_FILE)
-
-                    # An earlier call that timed out client-side may still answer later;
-                    # drop responses that belong to another request.
-                    if response.get("id") != request["id"]:
-                        continue
-
-                    if "error" in response:
-                        error = response["error"]
-                        raise RenderDocBridgeError(f"[{error['code']}] {error['message']}")
-
-                    return response.get("result")
-
-                # Check timeout
+            while not os.path.exists(response_file):
                 if time.time() - start_time > timeout:
+                    # Withdraw the request if it was not picked up yet, so it does not run later
+                    try:
+                        os.remove(request_file)
+                    except OSError:
+                        pass
                     raise RenderDocBridgeError("Request timed out")
-
-                # Poll interval
                 time.sleep(0.05)
 
+            response = _read_and_remove(response_file)
         except RenderDocBridgeError:
             raise
         except Exception as e:
             raise RenderDocBridgeError(f"Communication error: {e}")
+
+        if "error" in response:
+            error = response["error"]
+            raise RenderDocBridgeError(f"[{error['code']}] {error['message']}")
+        return response.get("result")
+
+
+def _read_and_remove(path: str, attempts: int = 50) -> dict:
+    """Read a response file, then delete it.
+
+    A file that was just renamed into place can be held briefly by another process (on-access virus scanners
+    open large new files), which shows up as PermissionError; retry for a few seconds before giving up.
+    """
+    for attempt in range(attempts):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                response = json.load(f)
+            break
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.1)
+    for attempt in range(attempts):
+        try:
+            os.remove(path)
+            break
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.1)
+    return response

@@ -26,9 +26,27 @@ except ImportError:
 # IPC directory
 # RENDERDOC_MCP_IPC_DIR lets a second RenderDoc instance (e.g. an elevated one) use its own channel
 IPC_DIR = os.environ.get("RENDERDOC_MCP_IPC_DIR") or os.path.join(tempfile.gettempdir(), "renderdoc_mcp")
+# Each request is request_<id>.json, answered by response_<id>.json; both are written to a .tmp file and
+# renamed, so several MCP server processes can share the directory. request.json / lock / response.json
+# is the older single-slot protocol, still served for clients that predate it.
+REQUEST_PREFIX, REQUEST_SUFFIX = "request_", ".json"
 REQUEST_FILE = os.path.join(IPC_DIR, "request.json")
 RESPONSE_FILE = os.path.join(IPC_DIR, "response.json")
 LOCK_FILE = os.path.join(IPC_DIR, "lock")
+# faulthandler output of this RenderDoc instance (one per IPC directory, so two instances do not truncate each other's)
+FAULT_LOG = os.path.join(IPC_DIR, "fault.log")
+
+
+def _retry_io(fn, *args):
+    """Run a file operation, retrying for a few seconds while another process (an on-access virus
+    scanner reading a new file) briefly holds the file and Windows reports PermissionError."""
+    for attempt in range(50):
+        try:
+            return fn(*args)
+        except PermissionError:
+            if attempt == 49:
+                raise
+            time.sleep(0.1)
 
 
 class MCPBridgeServer(QObject):
@@ -87,7 +105,7 @@ class MCPBridgeServer(QObject):
     def _poll_loop(self):
         """Worker-thread poller used when PySide2 is unavailable"""
         while self._running:
-            if not self._busy and os.path.exists(REQUEST_FILE) and not os.path.exists(LOCK_FILE):
+            if not self._busy and self._pending_requests():
                 self._busy = True
                 try:
                     self._ui_invoke(self._handle_on_ui_thread)
@@ -108,33 +126,57 @@ class MCPBridgeServer(QObject):
 
     def _cleanup_files(self):
         """Remove IPC files"""
-        for f in [REQUEST_FILE, RESPONSE_FILE, LOCK_FILE]:
+        names = []
+        try:
+            names = [n for n in os.listdir(IPC_DIR) if n.startswith(("request_", "response_"))]
+        except Exception:
+            pass
+        for f in [REQUEST_FILE, RESPONSE_FILE, LOCK_FILE] + [os.path.join(IPC_DIR, n) for n in names]:
             try:
                 if os.path.exists(f):
                     os.remove(f)
             except Exception:
                 pass
 
+    def _pending_requests(self):
+        """[(request path, response path)] waiting to be served, oldest first"""
+        pending = []
+        try:
+            names = os.listdir(IPC_DIR)
+        except Exception:
+            return pending
+        for name in names:
+            if name.startswith(REQUEST_PREFIX) and name.endswith(REQUEST_SUFFIX):
+                path = os.path.join(IPC_DIR, name)
+                rid = name[len(REQUEST_PREFIX):-len(REQUEST_SUFFIX)]
+                try:
+                    pending.append((os.path.getmtime(path), path, os.path.join(IPC_DIR, "response_%s.json" % rid)))
+                except OSError:
+                    pass
+        pending.sort()
+        # older clients: one request.json slot, guarded by a lock file while it is written
+        if os.path.exists(REQUEST_FILE) and not os.path.exists(LOCK_FILE):
+            pending.append((0, REQUEST_FILE, RESPONSE_FILE))
+        return [(req, resp) for _, req, resp in pending]
+
     def _poll_request(self):
-        """Check for incoming request"""
+        """Serve every pending request"""
         if not self._running:
             return
+        for request_file, response_file in self._pending_requests():
+            self._serve(request_file, response_file)
 
-        # Check if request file exists
-        if not os.path.exists(REQUEST_FILE):
-            return
-
-        # Check if lock file exists (client is still writing)
-        if os.path.exists(LOCK_FILE):
-            return
-
+    def _serve(self, request_file, response_file):
         try:
-            # Read request
-            with open(REQUEST_FILE, "r", encoding="utf-8") as f:
-                request = json.load(f)
+            # Read request (a client that timed out may have withdrawn it since it was listed)
+            try:
+                with open(request_file, "r", encoding="utf-8") as f:
+                    request = json.load(f)
+            except (IOError, OSError):
+                return
 
             # Remove request file
-            os.remove(REQUEST_FILE)
+            _retry_io(os.remove, request_file)
 
             # Process request
             try:
@@ -148,10 +190,10 @@ class MCPBridgeServer(QObject):
 
             # Write response: to a temp file first, then rename, so the client never sees a
             # half-written document (large results take longer than its polling delay)
-            tmp_file = RESPONSE_FILE + ".tmp"
+            tmp_file = response_file + ".tmp"
             with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(response, f)
-            os.replace(tmp_file, RESPONSE_FILE)
+            _retry_io(os.replace, tmp_file, response_file)
 
         except Exception as e:
             print("[MCP Bridge] Error processing request: %s" % str(e))
