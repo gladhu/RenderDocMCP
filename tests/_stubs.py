@@ -36,7 +36,7 @@ def install():
         return
     _module("renderdoc")
     _module("renderdoc_extension", EXTENSION_DIR, _test_stub=True)
-    _module("renderdoc_extension.utils", os.path.join(EXTENSION_DIR, "utils"), Helpers=object)
+    _module("renderdoc_extension.utils", os.path.join(EXTENSION_DIR, "utils"), Helpers=object, Parsers=object)
     _module("renderdoc_extension.services", SERVICES_DIR)
     _module("renderdoc_extension.services.action_service", _sd_value=lambda x: x)
 

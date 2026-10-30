@@ -12,9 +12,11 @@ from .diagnosis_service import DiagnosisService
 from .pass_service import PassService
 from .bandwidth_service import BandwidthService
 from .debug_service import DebugService
+from .overlay_service import OverlayService
 
 __all__ = [
     "DebugService",
+    "OverlayService",
     "CaptureManager",
     "ActionService",
     "SearchService",

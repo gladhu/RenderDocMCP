@@ -1344,6 +1344,55 @@ def get_debug_messages(
 
 
 @mcp.tool
+def render_overlay(
+    event_id: ReqInt,
+    overlay: Literal[
+        "depth", "stencil", "backface_cull", "drawcall", "wireframe", "viewport_scissor", "nan", "clipping",
+        "quad_overdraw_draw", "quad_overdraw_pass", "triangle_size_draw", "triangle_size_pass",
+    ] = "depth",
+    target: str = "color0",
+    resource_id: str | None = None,
+    output_path: str | None = None,
+    analyze: bool = True,
+) -> dict:
+    """
+    Render one of RenderDoc's debug overlays at a draw call on the replay device (the phone, for remote
+    replay), save it as a PNG you can look at, and summarise it in numbers.
+
+    The first tool to reach for when "why is this object not visible / wrong / expensive":
+    - depth / stencil: pixels of THIS draw that passed (green) or failed (red) the test. Everything failed =
+      hidden behind earlier geometry or wrong depth func/clear; passed but nothing visible = look elsewhere.
+    - backface_cull: kept (green) vs culled (red). Everything culled = wrong winding / cull mode.
+    - drawcall / wireframe: where the draw is and its triangle edges (wire pixel count).
+    - viewport_scissor: also returns the viewport and scissor rectangles; a draw clipped by a wrong scissor
+      shows up here.
+    - nan / clipping: pixels marked (count, colours); 0 marked = clean.
+    - quad_overdraw_draw / _pass: overdraw per pixel (this draw / the whole pass up to it): mean, max,
+      share of pixels shaded more than once, histogram. Counts only fragments that passed the depth test, in
+      2x2 quads (so edges between triangles show 2). The pass variant is the number to compare before/after
+      sorting or culling changes on a mobile GPU.
+    - triangle_size_draw / _pass: pixels by the area of the triangle covering them (<4 px, 4-16, ...);
+      lots of pixels in tiny triangles = geometry too dense for its screen size. Pixel-weighted: micro
+      triangles cover few pixels, so cross-check with estimate_geometry_cost.
+
+    Args:
+        event_id: a draw call (overlays need a draw; markers have none)
+        target: "color0".. or "depth" of that event (Vulkan: taken from the render pass), or give resource_id
+        output_path: where to write the PNG (default %TEMP%/renderdoc_mcp/overlays/overlay_e<event>_<overlay>.png);
+            open it to see the overlay
+        analyze: also read the overlay back and count (about 1 s on a phone, more transfer on big targets);
+            False only saves the image
+    clear_before_pass / clear_before_draw are not offered: their overlay texture carries no data.
+    """
+    params: dict[str, object] = {"event_id": event_id, "overlay": overlay, "target": target, "analyze": analyze}
+    if resource_id is not None:
+        params["resource_id"] = resource_id
+    if output_path is not None:
+        params["output_path"] = output_path
+    return bridge.call("render_overlay", params, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
 def get_api_calls(
     event_id: OptInt = None,
     start_event: OptInt = None,

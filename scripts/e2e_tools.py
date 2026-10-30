@@ -58,8 +58,86 @@ async def t_get_debug_messages(client, mode):
         print("     [%s/%s x%d] %s" % (g["severity"], g["category"], g["count"], g["description"][:110]))
 
 
+async def pick_draw(client, min_indices=100):
+    """A mid-frame draw call with real geometry (works on every API / capture, also when the draw list is huge)"""
+    r = await call(client, "get_draw_calls", only_actions=True, flags_filter=["Drawcall"])
+    if "actions" not in r:                                  # too large: the result was cached, ask for windows
+        for lo in range(500, 20000, 500):
+            r = await call(client, "get_draw_calls", only_actions=True, flags_filter=["Drawcall"],
+                           event_id_min=lo, event_id_max=lo + 499)
+            if "actions" in r and sum(1 for a in r["actions"] if a.get("num_indices", 0) >= min_indices) >= 5:
+                break
+    draws = [a for a in r["actions"] if a.get("num_indices", 0) >= min_indices]
+    return draws[len(draws) * 2 // 5]["event_id"]
+
+
+def png_ok(path):
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8)
+        return head == b"\x89PNG\r\n\x1a\n" and os.path.getsize(path) > 1000
+    except OSError:
+        return False
+
+
+async def t_render_overlay(client, mode):
+    eid = await pick_draw(client)
+    cov = (await call(client, "get_draw_coverage", event_ids=[eid]))["draws"][0]
+    print("     draw event %d: coverage passed=%d failed=%d rt=%s" % (eid, cov["passed"], cov["failed"], cov["rt_size"]))
+
+    d = await call(client, "render_overlay", event_id=eid, overlay="depth")
+    by = d["stats"]["by_label"]
+    check("overlay depth: passed == coverage", by["passed"]["pixels"] == cov["passed"], "%d vs %d" % (by["passed"]["pixels"], cov["passed"]))
+    check("overlay depth: failed == coverage", by["failed"]["pixels"] == cov["failed"], "%d vs %d" % (by["failed"]["pixels"], cov["failed"]))
+    check("overlay depth: labels cover the target",
+          sum(v["pixels"] for v in by.values()) == d["stats"]["total_pixels"] == cov["rt_size"][0] * cov["rt_size"][1])
+    check("overlay depth: PNG written", png_ok(d["image_path"]), d["image_path"])
+
+    qd = (await call(client, "render_overlay", event_id=eid, overlay="quad_overdraw_draw"))["stats"]
+    qp = (await call(client, "render_overlay", event_id=eid, overlay="quad_overdraw_pass"))["stats"]
+    if mode == "gles":                                      # RenderDoc cannot fill this overlay on GL / GLES
+        check("overlay quad_overdraw: flagged unsupported on GLES", qd.get("supported") is False and "analyze_overdraw" in qd["warning"],
+              "covered=%d" % qd["covered_pixels"])
+    else:
+        check("overlay quad_overdraw_draw: covers ~ the passed pixels",
+              cov["passed"] == 0 or abs(qd["covered_pixels"] - cov["passed"]) <= max(0.1 * cov["passed"], 64),
+              "covered=%d passed=%d" % (qd["covered_pixels"], cov["passed"]))
+        check("overlay quad_overdraw_draw: mean >= 1", cov["passed"] == 0 or qd["mean_overdraw"] >= 1.0, "mean=%s max=%s" % (qd["mean_overdraw"], qd["max_overdraw"]))
+        check("overlay quad_overdraw_pass covers at least the draw", qp["covered_pixels"] >= qd["covered_pixels"],
+              "pass=%d draw=%d mean=%s max=%s" % (qp["covered_pixels"], qd["covered_pixels"], qp["mean_overdraw"], qp["max_overdraw"]))
+
+    ts = (await call(client, "render_overlay", event_id=eid, overlay="triangle_size_draw"))["stats"]
+    check("overlay triangle_size_draw: covers ~ the passed pixels",
+          cov["passed"] == 0 or abs(ts["covered_pixels"] - cov["passed"]) <= max(0.05 * cov["passed"], 64),
+          "covered=%d passed=%d" % (ts["covered_pixels"], cov["passed"]))
+    check("overlay triangle_size_draw: buckets sum to covered",
+          sum(b["pixels"] for b in ts["pixels_by_triangle_area"].values()) == ts["covered_pixels"])
+
+    bf = (await call(client, "render_overlay", event_id=eid, overlay="backface_cull"))["stats"]
+    check("overlay backface_cull: kept pixels", bf["by_label"]["kept"]["pixels"] + bf["by_label"]["culled"]["pixels"] >= cov["passed"] * 0.9,
+          str({k: v["pixels"] for k, v in bf["by_label"].items()}))
+    wf = await call(client, "render_overlay", event_id=eid, overlay="wireframe", analyze=False)
+    check("overlay wireframe: image only, no stats", "stats" not in wf and png_ok(wf["image_path"]))
+    vs = await call(client, "render_overlay", event_id=eid, overlay="viewport_scissor")
+    check("overlay viewport_scissor: rectangles reported", "viewport" in vs["viewport_scissor"] and "scissor" in vs["viewport_scissor"],
+          str(vs["viewport_scissor"].get("viewport")))
+    nn = (await call(client, "render_overlay", event_id=eid, overlay="nan"))["stats"]
+    check("overlay nan: reports marked pixels", nn["marked_pixels"] >= 0 and nn["total_pixels"] > 0, "marked=%d" % nn["marked_pixels"])
+
+    for bad, args in (("unknown overlay", dict(event_id=eid, overlay="sparkle")),
+                      ("event without a draw", dict(event_id=1, overlay="depth"))):
+        try:
+            await call(client, "render_overlay", **args)
+            check("overlay error: " + bad, False, "no error raised")
+        except RuntimeError as e:
+            check("overlay error: " + bad, True, str(e)[-90:])
+    again = await call(client, "render_overlay", event_id=eid, overlay="drawcall")
+    check("overlay: bridge still healthy after errors", again["stats"]["by_label"]["draw"]["pixels"] > 0 or cov["passed"] == 0)
+
+
 TESTS = {
     "get_debug_messages": t_get_debug_messages,
+    "render_overlay": t_render_overlay,
 }
 
 

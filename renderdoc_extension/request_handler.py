@@ -58,6 +58,7 @@ class RequestHandler:
             "get_post_vs_data": self._handle_get_post_vs_data,
             "export_mesh": self._handle_export_mesh,
             "get_debug_messages": self._handle_get_debug_messages,
+            "render_overlay": self._handle_render_overlay,
         }
 
     def handle(self, request):
@@ -490,4 +491,18 @@ class RequestHandler:
             event_id_max=opt_int("event_id_max"),
             max_messages=int(params.get("max_messages", 100)),
             max_groups=int(params.get("max_groups", 30)),
+        )
+
+    def _handle_render_overlay(self, params):
+        """Handle render_overlay request"""
+        event_id = params.get("event_id")
+        if event_id is None:
+            raise ValueError("event_id is required")
+        return self.facade.render_overlay(
+            event_id=int(event_id),
+            overlay=params.get("overlay", "depth"),
+            target=params.get("target", "color0"),
+            resource_id=params.get("resource_id"),
+            output_path=params.get("output_path"),
+            analyze=bool(params.get("analyze", True)),
         )

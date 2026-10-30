@@ -16,6 +16,7 @@ from .services import (
     PassService,
     BandwidthService,
     DebugService,
+    OverlayService,
 )
 
 
@@ -56,6 +57,7 @@ class RenderDocFacade:
         self._pass = PassService(ctx, self._invoke)
         self._bandwidth = BandwidthService(ctx, self._invoke)
         self._debug = DebugService(ctx, self._invoke)
+        self._overlay = OverlayService(ctx, self._invoke)
 
     def _invoke(self, callback):
         """Invoke callback on replay thread via BlockInvoke"""
@@ -278,3 +280,7 @@ class RenderDocFacade:
     def get_debug_messages(self, **kwargs):
         """API validation / driver debug messages, filtered and grouped"""
         return self._debug.get_debug_messages(**kwargs)
+
+    def render_overlay(self, **kwargs):
+        """Render a debug overlay at an event, save it as an image and summarise its colours"""
+        return self._overlay.render_overlay(**kwargs)
