@@ -69,6 +69,14 @@ Each item says what is known, what is not, and how to tell it is done.
   skip draws that cannot differ (same state and render target as the previous one), or cap per-marker sampling.
   `estimate_shading_cost` / `estimate_geometry_cost` / `analyze_overdraw` now get coverage and shader sources from
   one replay pass instead of two.
+  Measured 2026-10-30 (GLES capture, 15-17 draws per run, Mali-G610): per draw `SetFrameEvent` ~0.13-0.17 s, depth overlay
+  ~0.06 s, two histograms ~0.025 s. **`SetFrameEvent(eid, False)` instead of `True` makes no difference** (4 runs each,
+  within the phone's own +-15 % noise, identical per-draw results), so that flag is not the lever. The cost is the
+  replay of the event itself. Vulkan has an exact shortcut for the PASSED count only: the `Samples Passed` counter
+  (`get_gpu_counters`) equals the depth-overlay passed pixels and takes 0.2 s for the whole frame, but it cannot give
+  the FAILED (occluded) count that overdraw / hidden-pixel analysis needs, so it cannot replace the overlay. Ideas left:
+  sample draws per (shader, render target) and extrapolate (changes the meaning: estimate, not measurement), or run only
+  the draws of the passes the question is about (`marker_filter` already allows this).
 - [x] **Settle wait after `open_capture`** removed (default 0; `RENDERDOC_MCP_COMPARE_SETTLE` still overrides). It had
   been added for the crashes above. `open_capture` now waits for `capture_loading` to clear.
 - [ ] **A snapshot takes ~3 min on 839 draws, `compare_captures` ~7 min plus two loads.**
