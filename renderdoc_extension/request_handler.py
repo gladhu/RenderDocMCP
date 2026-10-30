@@ -60,6 +60,8 @@ class RequestHandler:
             "get_debug_messages": self._handle_get_debug_messages,
             "render_overlay": self._handle_render_overlay,
             "get_gpu_counters": self._handle_get_gpu_counters,
+            "replace_shader": self._handle_replace_shader,
+            "revert_shader": self._handle_revert_shader,
         }
 
     def handle(self, request):
@@ -524,3 +526,22 @@ class RequestHandler:
             include_events=bool(params.get("include_events", False)),
             repeat=int(params.get("repeat", 1)),
         )
+
+    def _handle_replace_shader(self, params):
+        """Handle replace_shader request"""
+        event_id = params.get("event_id")
+        if event_id is None:
+            raise ValueError("event_id is required")
+        return self.facade.replace_shader(
+            event_id=int(event_id),
+            stage=params.get("stage", "pixel"),
+            source=params.get("source"),
+            edits=params.get("edits"),
+            encoding=params.get("encoding", "auto"),
+            entry=params.get("entry"),
+            dry_run=bool(params.get("dry_run", False)),
+        )
+
+    def _handle_revert_shader(self, params):
+        """Handle revert_shader request"""
+        return self.facade.revert_shader(params.get("shader_id"))

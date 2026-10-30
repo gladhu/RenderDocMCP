@@ -14,11 +14,13 @@ from .bandwidth_service import BandwidthService
 from .debug_service import DebugService
 from .overlay_service import OverlayService
 from .counter_service import CounterService
+from .replace_service import ReplaceService
 
 __all__ = [
     "DebugService",
     "OverlayService",
     "CounterService",
+    "ReplaceService",
     "CaptureManager",
     "ActionService",
     "SearchService",

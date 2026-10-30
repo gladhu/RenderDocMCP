@@ -19,6 +19,7 @@ from .services import (
     DebugService,
     OverlayService,
     CounterService,
+    ReplaceService,
 )
 
 
@@ -61,6 +62,7 @@ class RenderDocFacade:
         self._debug = DebugService(ctx, self._invoke)
         self._overlay = OverlayService(ctx, self._invoke)
         self._counters = CounterService(ctx, self._invoke)
+        self._replace = ReplaceService(ctx, self._invoke)
 
     def _invoke(self, callback):
         """Invoke callback on replay thread via BlockInvoke; what the callback raises is raised here"""
@@ -291,3 +293,11 @@ class RenderDocFacade:
     def get_gpu_counters(self, **kwargs):
         """List the device's GPU counters, or fetch selected ones per event"""
         return self._counters.get_gpu_counters(**kwargs)
+
+    def replace_shader(self, **kwargs):
+        """Rebuild a shader on the replay device and replay with it"""
+        return self._replace.replace_shader(**kwargs)
+
+    def revert_shader(self, shader_id=None):
+        """Remove shader replacements"""
+        return self._replace.revert_shader(shader_id)

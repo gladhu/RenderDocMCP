@@ -275,10 +275,119 @@ async def t_diff_textures(client, mode):
             check("diff error: " + name, True)
 
 
+NL = chr(10)
+
+
+def _mode_edit(mode):
+    """edit that makes every pixel of the shader's draws magenta (GLES)"""
+    return [{"find": "void main()" + NL + "{", "replace": "void main()" + NL + "{" + NL + "    SV_Target0 = vec4(1.0, 0.0, 1.0, 1.0); return;"}]
+
+
+async def t_replace_shader(client, mode):
+    """Replace a shader on the phone, see the picture change, and get the original back"""
+    import base64
+    import struct
+    # a draw that writes a colour target with real coverage
+    if mode == "gles":
+        cov = (await call(client, "get_draw_coverage", event_id_min=800, event_id_max=830))["draws"]
+        eid = next(d["event_id"] for d in cov if d["passed"] > 5000 and d["rt_size"][0] >= 800)
+        want = next(d["passed"] for d in cov if d["event_id"] == eid)
+    else:
+        eid = 203
+        want = (await call(client, "get_draw_coverage", event_ids=[eid]))["draws"][0]["passed"]
+    print("     event %d, %d pixels covered" % (eid, want))
+    T = os.path.join(os.environ.get("TEMP", "."), "renderdoc_mcp")
+
+    async def shot(name):
+        path = os.path.join(T, "e2e_rep_%s_%s.png" % (mode, name))
+        await call(client, "save_texture", event_id=eid, output_path=path)
+        return path
+
+    async def differ(a, b):
+        return (await call(client, "diff_textures", path_a=a, path_b=b))["differing_pixels"]
+
+    base = await shot("base")
+    await call(client, "revert_shader")
+
+    ctl = await call(client, "replace_shader", event_id=eid)
+    check("replace: unchanged rebuild compiles on the device", ctl["compiled"] and ctl["replaced"] and ctl["compiler_output"] == "",
+          "%s %d bytes" % (ctl["encoding"], ctl["bytes"]))
+    check("replace: unchanged rebuild leaves the picture identical", await differ(base, await shot("ctl")) == 0)
+
+    if mode == "gles":
+        dry = await call(client, "replace_shader", event_id=eid, edits=_mode_edit(mode), dry_run=True)
+        check("replace: dry run shows the diff and replaces nothing", dry["dry_run"] and dry["changes"]["changed"] and "replaced" not in dry, str(dry["changes"]["diff"][4:6]))
+        bad = await call(client, "replace_shader", event_id=eid, source="this is not glsl")
+        check("replace: device compiler error returned, nothing replaced", bad["compiled"] is False and bad["replaced"] is False and bad["compiler_output"] != "",
+              bad["compiler_output"][:60])
+        check("replace: failed build leaves the previous replacement working", await differ(base, await shot("after_bad")) == 0)
+        r = await call(client, "replace_shader", event_id=eid, edits=_mode_edit(mode))
+        check("replace: edited shader compiles", r["compiled"] and r["replaced"] and r["edits_applied"] == [1])
+        n = await differ(base, await shot("magenta"))
+        check("replace: picture changes exactly where the draw shaded", n == want, "%d differing vs %d covered" % (n, want))
+        try:
+            await call(client, "replace_shader", event_id=eid, edits=[{"find": "text that is not in the shader", "replace": "x"}])
+            check("replace: edit with missing text raises", False)
+        except RuntimeError as e:
+            check("replace: edit with missing text raises", "not found" in str(e))
+    else:
+        spv_file = os.path.join(T, "e2e_rep_original.spv.b64")
+        exported = await call(client, "get_shader_source", event_id=eid, stage="pixel", output_path=spv_file)
+        check("replace: shader exported to a file (too big for the conversation)", exported["output_path"] == spv_file and "source" not in exported)
+        with open(spv_file, encoding="utf-8") as fh:
+            raw = bytearray(base64.b64decode(fh.read()))
+        words = struct.unpack("<%dI" % (len(raw) // 4), bytes(raw))
+        i, idx = 5, None
+        f32 = set()
+        while i < len(words):                        # first float constant equal to 1.0 (a plain scale / alpha factor)
+            op, n = words[i] & 0xFFFF, words[i] >> 16
+            if op == 22 and words[i + 2] == 32:
+                f32.add(words[i + 1])
+            if op == 43 and words[i + 1] in f32 and struct.unpack("<f", struct.pack("<I", words[i + 3]))[0] == 1.0:
+                idx = i + 3
+            i += n
+        check("replace: found a float constant to edit in the SPIR-V", idx is not None)
+        struct.pack_into("<f", raw, idx * 4, 0.0)
+        mod_file = os.path.join(T, "e2e_rep_modified.spv")
+        with open(mod_file, "wb") as fh:
+            fh.write(bytes(raw))                           # raw binary this time
+        r = await call(client, "replace_shader", event_id=eid, source_path=mod_file)
+        check("replace: modified SPIR-V compiles on the device", r["compiled"] and r["replaced"], "%s %d bytes" % (r["encoding"], r["bytes"]))
+        n = await differ(base, await shot("modified"))
+        check("replace: modified SPIR-V changes the picture", n > 0, "%d pixels differ (the shader is shared by several draws)" % n)
+        try:
+            await call(client, "replace_shader", event_id=eid, edits=[{"find": "a", "replace": "b"}])
+            check("replace: edits on SPIR-V explain what to do instead", False)
+        except RuntimeError as e:
+            check("replace: edits on SPIR-V explain what to do instead", "SPIR-V" in str(e))
+        for label, blob in (("truncated SPIR-V", bytes(raw[:400])), ("not SPIR-V at all", b"this is not spirv at all!!")):
+            try:
+                bad_file = os.path.join(T, "e2e_rep_bad.bin")
+                with open(bad_file, "wb") as fh:
+                    fh.write(blob)
+                await call(client, "replace_shader", event_id=eid, source_path=bad_file)
+                check("replace: %s is refused before it reaches the device" % label, False)
+            except RuntimeError as e:
+                check("replace: %s is refused before it reaches the device" % label, "SPIR-V" in str(e), str(e)[-70:])
+        check("replace: the replay still works after the refused blobs", await differ(base, await shot("after_refused")) == n)
+
+    active = await call(client, "revert_shader")
+    check("revert: everything reverted", active["active_replacements"] == [] and len(active["reverted"]) == 1)
+    check("revert: picture is back to the original", await differ(base, await shot("reverted")) == 0)
+    try:
+        await call(client, "revert_shader", shader_id="ResourceId::1")
+        check("revert: unknown shader id raises", False)
+    except RuntimeError:
+        check("revert: unknown shader id raises", True)
+    cov2 = (await call(client, "get_draw_coverage", event_ids=[eid]))["draws"][0]["passed"]
+    check("revert: the depth coverage is back too", cov2 == want, "%d vs %d" % (cov2, want))
+
+
 TESTS = {
     "get_debug_messages": t_get_debug_messages,
     "event_targets": t_event_targets,
     "diff_textures": t_diff_textures,
+    "replace_shader": t_replace_shader,
     "render_overlay": t_render_overlay,
     "get_gpu_counters": t_get_gpu_counters,
 }

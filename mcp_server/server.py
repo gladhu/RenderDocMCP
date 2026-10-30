@@ -519,7 +519,8 @@ def get_shader_source(
     output_path: str | None = None,
 ) -> dict:
     """
-    Get the GLSL source of a shader as captured (OpenGL / GLES captures).
+    Get the source of a shader as captured. OpenGL / GLES: the GLSL text. Vulkan: there is no text, `source` is the
+    shader's SPIR-V binary as base64 (what replace_shader takes as its starting point and modified replacement).
 
     Args:
         event_id: Draw call event id
@@ -1536,6 +1537,101 @@ def diff_textures(
         result["heat_map_path"] = heat
     result["side_a"], result["side_b"] = side_a, side_b
     return result
+
+
+def _read_replacement(path: str, encoding: str) -> str:
+    """Replacement shader file -> the string the extension takes (GLSL text, or base64 for SPIR-V)"""
+    import base64
+    if not os.path.isfile(path):
+        raise ValueError(f"source_path not found: {path}")
+    with open(path, "rb") as f:
+        data = f.read()
+    if encoding == "glsl":
+        return data.decode("utf-8")
+    if data[:4] == b"#":                      # raw little-endian SPIR-V
+        return base64.b64encode(data).decode("ascii")
+    text = data.decode("utf-8", "replace").strip()
+    if encoding == "auto" and ("void main" in text or text.startswith("#version")):
+        return text                                            # GLSL text: the extension treats it as such
+    return "".join(text.split())                                # base64 text, possibly wrapped across lines
+
+
+@mcp.tool
+def replace_shader(
+    event_id: ReqInt,
+    stage: Literal["vertex", "pixel", "compute", "hull", "domain", "geometry"] = "pixel",
+    edits: list[dict[str, str]] | None = None,
+    source: str | None = None,
+    source_path: str | None = None,
+    encoding: Literal["auto", "glsl", "spirv"] = "auto",
+    entry: str | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """
+    Edit a shader, rebuild it on the replay device and replay the capture with it - test a fix or an
+    optimisation without rebuilding the game.
+
+    The shader bound to `stage` at `event_id` is replaced for EVERY draw that uses it, and the replacement
+    stays active for all other tools until revert_shader (or another capture is opened). So the loop is:
+    replace_shader -> measure (get_gpu_counters(repeat=3), estimate_shading_cost, render_overlay, pixel reads)
+    and look (diff_textures against the picture before, save_texture) -> revert_shader. Take the "before" picture
+    / numbers FIRST; a rebuild with no edits (the default call) is the control that shows what a recompile alone
+    changes.
+
+    Compilation happens on the device (the phone's own driver for remote replay): compile errors and warnings come
+    back verbatim in compiler_output with compiled=false and nothing is replaced.
+
+    Starting point:
+      - OpenGL / OpenGL ES: the shader's GLSL source (get_shader_sources(event_ids=[e], stage=..) shows it).
+        Use `edits`: [{"find": "text in the source", "replace": "new text"}, ...] applied in order; every occurrence
+        is replaced, and a find that is not in the source is an error. Or pass the whole new text as `source`.
+        Examples: prepend "discard;" inside main to see which draws a shader belongs to (the picture loses them);
+        change a precision qualifier, drop a texture fetch, hard-code a branch, return a constant to test whether
+        a shader is the cause of a colour.
+      - Vulkan: shaders only exist as SPIR-V, so there is no text to edit. Pass a replacement SPIR-V binary as
+        `source_path` (a .spv file: raw binary, or base64 text) or `source` (base64), or Vulkan GLSL with
+        encoding="glsl" that matches the shader's inputs, outputs and descriptor bindings. A SPIR-V binary is
+        a few hundred KB of base64, too big to pass through the conversation: export the captured one with
+        get_shader_source(output_path=...) (it writes the base64), change it with a script or spirv-tools
+        (spirv-dis / spirv-as), save it and give the file as source_path. The binary is structurally validated
+        first (a truncated or non-SPIR-V blob is refused: the device accepts it without a message and the replay
+        then fails until the capture is reopened). With no source it rebuilds the original SPIR-V unchanged.
+    Result: replaced / compiled, compiler_output, a diff of the change (GLSL), hashes, the active replacements.
+
+    Args:
+        event_id: a draw / dispatch that uses the shader (the shader is looked up from the pipeline there)
+        stage: which stage's shader to replace
+        edits: find / replace pairs on the original GLSL text (not together with source)
+        source: the whole replacement shader: GLSL text, or base64 SPIR-V (encoding "spirv" / auto on Vulkan)
+        source_path: file with the replacement (GLSL text, or SPIR-V as raw binary or base64); not with source
+        entry: entry point name (default: the shader's own, "main" in GLSL)
+        dry_run: only apply the edits and show the diff, do not compile or replace
+    """
+    params: dict[str, object] = {"event_id": event_id, "stage": stage, "encoding": encoding, "dry_run": dry_run}
+    if edits:
+        params["edits"] = edits
+    if source is not None and source_path:
+        raise ValueError("give source or source_path, not both")
+    if source_path:
+        source = _read_replacement(source_path, encoding)
+    if source is not None:
+        params["source"] = source
+    if entry:
+        params["entry"] = entry
+    return bridge.call("replace_shader", params, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
+def revert_shader(shader_id: str | None = None) -> dict:
+    """
+    Remove shader replacements made with replace_shader: one (the original or the replacement resource id) or, with
+    no argument, all of them. Returns what was reverted and what is still active. Always call this when an
+    experiment is done: while a replacement is active every analysis tool sees the edited shader.
+    """
+    params: dict[str, object] = {}
+    if shader_id:
+        params["shader_id"] = shader_id
+    return bridge.call("revert_shader", params, timeout=_LONG_TIMEOUT)
 
 
 @mcp.tool
