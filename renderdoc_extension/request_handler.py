@@ -57,6 +57,7 @@ class RequestHandler:
             "analyze_state_changes": self._handle_analyze_state_changes,
             "get_post_vs_data": self._handle_get_post_vs_data,
             "export_mesh": self._handle_export_mesh,
+            "get_debug_messages": self._handle_get_debug_messages,
         }
 
     def handle(self, request):
@@ -474,3 +475,19 @@ class RequestHandler:
         if event_id is None or output_path is None:
             raise ValueError("event_id and output_path are required")
         return self.facade.export_mesh(int(event_id), output_path)
+
+    def _handle_get_debug_messages(self, params):
+        """Handle get_debug_messages request"""
+        def opt_int(key):
+            value = params.get(key)
+            return None if value is None else int(value)
+        return self.facade.get_debug_messages(
+            min_severity=params.get("min_severity") or "info",
+            category=params.get("category"),
+            source=params.get("source"),
+            text_filter=params.get("text_filter"),
+            event_id_min=opt_int("event_id_min"),
+            event_id_max=opt_int("event_id_max"),
+            max_messages=int(params.get("max_messages", 100)),
+            max_groups=int(params.get("max_groups", 30)),
+        )

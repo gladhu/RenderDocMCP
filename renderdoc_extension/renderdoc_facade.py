@@ -15,6 +15,7 @@ from .services import (
     DiagnosisService,
     PassService,
     BandwidthService,
+    DebugService,
 )
 
 
@@ -54,6 +55,7 @@ class RenderDocFacade:
         self._diagnosis = DiagnosisService(ctx, self._invoke)
         self._pass = PassService(ctx, self._invoke)
         self._bandwidth = BandwidthService(ctx, self._invoke)
+        self._debug = DebugService(ctx, self._invoke)
 
     def _invoke(self, callback):
         """Invoke callback on replay thread via BlockInvoke"""
@@ -272,3 +274,7 @@ class RenderDocFacade:
     def analyze_pass_bandwidth(self, top_n=30, sort_by="bytes"):
         """Attachment load/store traffic per tile pass"""
         return self._bandwidth.analyze_pass_bandwidth(top_n, sort_by)
+
+    def get_debug_messages(self, **kwargs):
+        """API validation / driver debug messages, filtered and grouped"""
+        return self._debug.get_debug_messages(**kwargs)

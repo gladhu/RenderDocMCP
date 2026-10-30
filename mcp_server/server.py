@@ -1305,6 +1305,45 @@ def export_mesh(event_id: ReqInt, output_path: str) -> dict:
 
 
 @mcp.tool
+def get_debug_messages(
+    min_severity: Literal["info", "low", "medium", "high"] = "info",
+    category: str | None = None,
+    source: str | None = None,
+    text_filter: str | None = None,
+    event_id_min: OptInt = None,
+    event_id_max: OptInt = None,
+    max_messages: LInt = 100,
+    max_groups: LInt = 30,
+) -> dict:
+    """
+    API validation / driver debug messages recorded with the capture (Vulkan validation layers,
+    GL/GLES KHR_debug output, the D3D debug layer) plus RenderDoc's own replay-time warnings.
+
+    First thing to read when a frame renders wrongly: an invalid descriptor, a wrong image layout,
+    a missing barrier or a GL error is often reported here with the event it happened at.
+    Identical messages are grouped (message_id + text) with a count and sample events; by_severity /
+    by_category / by_source / total_matched cover every matching message, groups and messages are capped.
+
+    Args:
+        min_severity: keep this severity or worse (info < low < medium < high)
+        category: name or substring, e.g. "Performance", "Execution", "Shaders", "State_Setting"
+        source: name or substring, e.g. "IncorrectAPIUse", "RedundantAPIUse", "GeneralPerformance"
+        text_filter: case-insensitive substring of the message text
+        event_id_min / event_id_max: only messages raised inside this event range
+    Note: validation messages exist only if the capture was recorded with the validation layer / debug
+    context on; an empty result does not prove the frame is valid.
+    """
+    params: dict[str, object] = {
+        "min_severity": min_severity, "max_messages": max_messages, "max_groups": max_groups,
+    }
+    for key, value in (("category", category), ("source", source), ("text_filter", text_filter),
+                       ("event_id_min", event_id_min), ("event_id_max", event_id_max)):
+        if value is not None:
+            params[key] = value
+    return bridge.call("get_debug_messages", params, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
 def get_api_calls(
     event_id: OptInt = None,
     start_event: OptInt = None,

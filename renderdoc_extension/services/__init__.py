@@ -11,8 +11,10 @@ from .analysis_service import AnalysisService
 from .diagnosis_service import DiagnosisService
 from .pass_service import PassService
 from .bandwidth_service import BandwidthService
+from .debug_service import DebugService
 
 __all__ = [
+    "DebugService",
     "CaptureManager",
     "ActionService",
     "SearchService",

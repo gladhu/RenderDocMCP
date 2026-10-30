@@ -53,7 +53,9 @@ RenderDocMCP/
 ├── scripts/
 │   ├── install_extension.py           # 安装扩展
 │   ├── capture_android.py             # Android Vulkan 抓帧
-│   └── e2e_check.py                   # 端到端检查（需已打开抓帧）
+│   ├── dev_cycle.py                   # 重启 RenderDoc、部署扩展、连手机、开抓帧
+│   ├── e2e_check.py                   # 端到端检查（需已打开抓帧）
+│   └── e2e_tools.py                   # 调试/优化工具的真机端到端检查（经 MCP 层，要求在手机上回放）
 └── tests/                             # 离线单元测试（unittest）
 ```
 
@@ -78,6 +80,7 @@ RenderDocMCP/
 | `get_buffer_bindings_at_event` | 一个 DC 绑定的 VB/IB/常量缓冲 |
 | `compare_pipeline_states` | 比较两个事件的管线状态，只返回不同字段（查没合批的原因） |
 | `get_api_calls` | 原始 API 调用及参数（event_id 或 start/end_event，name_filter） |
+| `get_debug_messages` | 抓帧里的 API 验证/驱动调试消息（Vulkan 验证层、KHR_debug、D3D 调试层）和回放期警告；按 (id, 文本) 归并计数，可按严重度/类别/来源/文本/事件范围过滤。数据来自 UI 侧 `ctx.DebugMessages()`，不占回放线程；抓帧时没开验证层则为空，不代表帧合法 |
 | `find_pixels` | 按通道条件找像素（网格采样，带包围盒） |
 | `get_cached_message` | 超大结果自动缓存后的分页/搜索；列表按条目分页，超大的非列表字段（如 shader 源码）按行分页；打开新抓帧时清空 |
 | （实现说明）`analyze_state_changes` / `diagnose_mobile_risks` | GL 下不逐 DC 回放：`services/gl_stream.py` 读调用流，`services/gl_state.py` 跟踪 glEnable/glBlendFunc/glUseProgram 等还原每个 DC 的状态；discard 检测按 program 缓存。839 DC 的帧 118s→0.2s、115s→13s，结果与回放路径一致。非 GL 仍走回放 |
