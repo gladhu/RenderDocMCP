@@ -183,6 +183,24 @@ uv tool update-shell  # 添加到 PATH
 | `get_post_vs_data` | 按索引顺序返回变换后顶点；只解码 float/half |
 | `export_mesh` | 按索引缓冲把 post-VS 网格导出为 OBJ（float/half） |
 
+### 调试与验证
+
+排查渲染 bug、验证修复或优化用的工具。**GLES 与 Vulkan 的能力不同**，下表写明；在手机上回放时全部由手机执行（设备编译器、设备 GPU）。
+
+| 工具 | 说明 |
+|------|------|
+| `get_debug_messages` | 抓帧里的 API 验证 / 驱动调试消息（Vulkan 验证层、KHR_debug、D3D 调试层）和回放期警告，按 (id, 文本) 归并计数。抓帧时没开验证层则为空，不代表帧合法 |
+| `render_overlay` | 在某个 DC 上渲染 RenderDoc 调试 overlay，存 PNG 并给出数字：depth / stencil 通过与失败像素、背面剔除、视口与裁剪、NaN、quad overdraw（均值 / 最大 / 直方图）、三角形大小分桶。quad overdraw 在 GL / GLES 上不支持，结果会标明 |
+| `get_gpu_counters` | 手机 GPU 硬件计数器。**GLES 抓帧有 GPU Duration + 37 个 Arm HWCPipe 计数器**（外部内存读写、shader 周期、Early/LateZ、Tiles…），**Vulkan 抓帧只有 GPU Duration 和 Samples Passed**。GPU 时间随频率变化，对比要用 `repeat` |
+| `replace_shader` / `revert_shader` | 改 shader、在手机上重编译并替换，之后所有工具看到的都是改后的 shader。GLES 改 GLSL（`edits` 查找替换），Vulkan 用 SPIR-V 文件（`source_path`）。设备编译器的错误原样返回；送设备前校验 SPIR-V，因为设备会接受任何字节并让回放失效 |
+| `debug_shader` | 单步调试一次 shader 调用，给出 NaN 第一次出现的位置、最终值和逐步变量变化。**只支持 Vulkan / D3D，GL / GLES 不支持**。模拟结果与手机 GPU 实际输出一致 |
+| `diff_textures` | 两张图的像素差异（数量、最大差、包围盒、热点区域、热力图 PNG）。两侧可以是事件的渲染目标、资源或 PNG 文件，所以也能跨抓帧比 |
+| `analyze_vulkan_sync` | 解码 Vulkan 的 barrier 与 layout 转换，指出过宽阶段掩码、丢弃已写内容的 UNDEFINED 转换、可合并的 barrier、layout 抖动。只解码 `vkCmdPipelineBarrier`，不模拟 render pass 的隐含转换 |
+
+典型闭环：`pixel_history` 找到写坏像素的 DC → `render_overlay` / `debug_shader` 看原因 → `replace_shader` 改 → `diff_textures` / `get_gpu_counters(repeat=3)` 验证 → `revert_shader`。
+
+`scripts/dev_cycle.py` 重启 RenderDoc、部署扩展、连手机、打开抓帧（`ensure` 只做需要的）；`scripts/e2e_tools.py` 在手机上检查这些工具，开头强制确认是在手机上回放。
+
 > malioc：运行一次 `python scripts/install_malioc.py`，从 Arm 官方地址下载并解出到 `tools/malioc/`（已 gitignore，不需要管理员权限）。Arm 许可不允许再分发，所以二进制不进仓库。查找顺序：`MALIOC_PATH` > PATH > `tools/malioc` > 已安装的 Arm Performance Studio。`compiler="mali"` 时 `gpu` 填真机的 GPU 型号，例如 `Mali-G610`。
 >
 > Adreno 分析需要 Qualcomm Adreno SDK 里的 `aoc`（在 PATH 里，或设置 `AOC_PATH`）。`compiler="adreno"` 时 `gpu` 填架构，例如 `a650`（默认）、`a730`、`a740`。aoc 没有周期模型，开销用总指令数表示，只能在 Adreno shader 之间比较，不能和 Mali 的周期数互比。
