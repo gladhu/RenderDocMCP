@@ -21,9 +21,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 class _EchoHandler:
     def __init__(self):
         self.calls = []
+        self.requests = []
 
     def handle(self, request):
         self.calls.append(request["method"])
+        self.requests.append(request)
         if request["method"] == "slow":
             time.sleep(0.3)
         if request["method"] == "fail":
@@ -105,6 +107,52 @@ class IpcTest(unittest.TestCase):
         with open(os.path.join(d, "response.json"), encoding="utf-8") as f:
             self.assertEqual(json.load(f)["id"], "old")
         os.remove(os.path.join(d, "response.json"))
+
+    def _drop_request(self, rid, body):
+        path = os.path.join(self.tmp.name, "request_%s.json" % rid)
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(dict(body, id=rid), f)
+        os.replace(path + ".tmp", path)
+        return path, os.path.join(self.tmp.name, "response_%s.json" % rid)
+
+    def _wait_gone(self, path, seconds=5):
+        deadline = time.time() + seconds
+        while os.path.exists(path) and time.time() < deadline:
+            time.sleep(0.05)
+        time.sleep(0.2)
+
+    def test_client_sends_the_time_it_stops_waiting(self):
+        before = time.time()
+        self.client().call("ping", timeout=7)
+        sent = [r for r in self.handler.requests if r["method"] == "ping"][-1]["deadline"]
+        self.assertTrue(before + 7 <= sent <= time.time() + 7)
+
+    def test_request_whose_client_is_gone_is_dropped_unanswered(self):
+        before = len(self.handler.calls)
+        req, resp = self._drop_request("stale", {"method": "stale_probe", "params": {}, "deadline": time.time() - 60})
+        self._wait_gone(req)
+        self.assertNotIn("stale_probe", self.handler.calls[before:])
+        self.assertFalse(os.path.exists(req))                       # picked up and discarded, not left to retry
+        self.assertFalse(os.path.exists(resp))                      # nobody is waiting: no orphan response file
+
+    def test_deadline_has_a_clock_slack(self):
+        req, resp = self._drop_request("slack", {"method": "slack_probe", "params": {}, "deadline": time.time() - 0.5})
+        deadline = time.time() + 5
+        while not os.path.exists(resp) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(os.path.exists(resp))
+        os.remove(resp)
+
+    def test_requests_without_a_deadline_are_still_served(self):
+        """clients that predate the deadline field"""
+        req, resp = self._drop_request("old", {"method": "old_probe", "params": {}})
+        deadline = time.time() + 5
+        while not os.path.exists(resp) and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(os.path.exists(resp))
+        with open(resp, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["result"]["method"], "old_probe")
+        os.remove(resp)
 
     def test_timed_out_request_is_withdrawn(self):
         self.server._running = False                  # stop serving for a moment

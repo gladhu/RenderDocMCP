@@ -158,6 +158,7 @@ get_action_timings(marker_filter="Camera.Render", exclude_markers=["GUI.Repaint"
 - IPC 目录：`%TEMP%/renderdoc_mcp/`，可用 `RENDERDOC_MCP_IPC_DIR` 改（多个 qrenderdoc 实例时各用各的；两端要设成同一个值）
 - 每个请求：客户端写 `request_<id>.json.tmp` 再改名为 `request_<id>.json`；扩展处理后同样先写 `.tmp` 再改名为
   `response_<id>.json`。多个 MCP 服务器进程可以共用一个 RenderDoc。客户端超时会撤回尚未被取走的请求
+- 请求里带 `deadline`（客户端不再等待的时刻，epoch 秒）。扩展取走请求时若已过期（超过 2 s 时钟余量）就丢弃且不回应：客户端被杀掉来不及撤回文件时，不会再白白执行（可能是个几分钟的 `get_draw_coverage`）并拖慢仍在等待的客户端。没有 `deadline` 的旧客户端照常处理。已经开始执行的请求无法取消
 - 旧协议（`request.json` + `lock` + `response.json`）仍然支持，供未重启的旧客户端使用
 - 轮询间隔：100ms（RenderDoc 侧）
 - 崩溃时 faulthandler 写到 IPC 目录下的 `fault.log`

@@ -35,6 +35,10 @@ RESPONSE_FILE = os.path.join(IPC_DIR, "response.json")
 LOCK_FILE = os.path.join(IPC_DIR, "lock")
 # faulthandler output of this RenderDoc instance (one per IPC directory, so two instances do not truncate each other's)
 FAULT_LOG = os.path.join(IPC_DIR, "fault.log")
+# A request carries "deadline" (epoch seconds: when its client stops waiting). One that is picked up later than
+# that is dropped unanswered: its client is gone (timed out, or killed before it could withdraw the file) and
+# running it would only delay the requests of clients that are still waiting. Seconds of clock slack:
+DEADLINE_GRACE = 2.0
 
 
 def _retry_io(fn, *args):
@@ -181,6 +185,12 @@ class MCPBridgeServer(QObject):
 
             # Remove request file
             _retry_io(os.remove, request_file)
+
+            deadline = request.get("deadline")
+            if isinstance(deadline, (int, float)) and time.time() > deadline + DEADLINE_GRACE:
+                print("[MCP Bridge] Dropped %s: its client stopped waiting %.0f s ago" % (
+                    request.get("method"), time.time() - deadline))
+                return
 
             # Process request
             try:

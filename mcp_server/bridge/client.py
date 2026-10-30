@@ -45,7 +45,8 @@ class RenderDocBridge:
             )
 
         request_id = uuid.uuid4().hex
-        request = {"id": request_id, "method": method, "params": params or {}}
+        # "deadline": when this client stops waiting; the extension drops a request it only gets to after that
+        request = {"id": request_id, "method": method, "params": params or {}, "deadline": time.time() + timeout}
         request_file = os.path.join(IPC_DIR, f"request_{request_id}.json")
         response_file = os.path.join(IPC_DIR, f"response_{request_id}.json")
 

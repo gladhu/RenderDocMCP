@@ -107,9 +107,10 @@ Each item says what is known, what is not, and how to tell it is done.
   172 s -> 542 s; `open_capture` 10 s -> 25-40 s. Force-stopping the phone server did not change it. Not explained (GPU clock /
   power state of the phone is the suspect). Two consequences: give long checks generous timeouts, and note that while a replay
   request runs RenderDoc's UI thread is blocked inside it, so Windows shows the window as "Not responding" - that is not a hang.
-  A client that is killed (or `timeout`-ed) after its request was picked up does not cancel it: the next client's requests queue
-  behind the leftover work, which looked like a hang once. Idea: have the extension skip requests whose client is gone
-  (request file removed) and expose a `cancel` for the running one.
+  A client that is killed after its request was picked up does not cancel it: the next client's requests queue behind the
+  running one, which looked like a hang once. Mitigated 2026-10-30: requests carry a `deadline` and the extension drops those
+  it only reaches after it (a killed client leaves its file behind; before, it was executed later for nobody). A request that is
+  already running still cannot be cancelled: still open.
 - [x] **Two MCP clients or two qrenderdoc instances racing for the IPC files.** Each request now has its own
   `request_<id>.json` / `response_<id>.json`, written to a temp name and renamed; the old single-slot protocol
   is still served. `RENDERDOC_MCP_IPC_DIR` still separates instances.
