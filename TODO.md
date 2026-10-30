@@ -93,6 +93,15 @@ Each item says what is known, what is not, and how to tell it is done.
   "Error opening capture" / "Socket unexpectedly disconnected". RenderDoc then shows a modal error on the UI thread and
   the extension stops answering until qrenderdoc is restarted. A plain capture switch (GLES -> Vulkan -> GLES) does
   not reproduce it. Idea: have `open_capture` detect a dead remote first (`CurrentRemote().Ping()`) and reconnect.
+- [ ] **The phone's replay speed varies a lot between sessions (up to ~4x), and a killed client leaves its request running.**
+  Measured 2026-10-30 on the same GLES capture and the same untouched code: `diagnose_mobile_risks` 12.8 s earlier in the day,
+  48-49 s later (checked on commits `72bd61b`, `e53c1a1` and HEAD alike, so it is not the code); `get_draw_coverage` over 839 draws
+  172 s -> 542 s; `open_capture` 10 s -> 25-40 s. Force-stopping the phone server did not change it. Not explained (GPU clock /
+  power state of the phone is the suspect). Two consequences: give long checks generous timeouts, and note that while a replay
+  request runs RenderDoc's UI thread is blocked inside it, so Windows shows the window as "Not responding" - that is not a hang.
+  A client that is killed (or `timeout`-ed) after its request was picked up does not cancel it: the next client's requests queue
+  behind the leftover work, which looked like a hang once. Idea: have the extension skip requests whose client is gone
+  (request file removed) and expose a `cancel` for the running one.
 - [x] **Two MCP clients or two qrenderdoc instances racing for the IPC files.** Each request now has its own
   `request_<id>.json` / `response_<id>.json`, written to a temp name and renamed; the old single-slot protocol
   is still served. `RENDERDOC_MCP_IPC_DIR` still separates instances.
