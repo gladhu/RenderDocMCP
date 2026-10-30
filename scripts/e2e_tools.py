@@ -293,7 +293,7 @@ async def t_replace_shader(client, mode):
         eid = next(d["event_id"] for d in cov if d["passed"] > 5000 and d["rt_size"][0] >= 800)
         want = next(d["passed"] for d in cov if d["event_id"] == eid)
     else:
-        eid = 203
+        eid = await pick_draw(client)
         want = (await call(client, "get_draw_coverage", event_ids=[eid]))["draws"][0]["passed"]
     print("     event %d, %d pixels covered" % (eid, want))
     T = os.path.join(os.environ.get("TEMP", "."), "renderdoc_mcp")
