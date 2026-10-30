@@ -40,6 +40,7 @@ RenderDocMCP/
 │   ├── bridge/client.py               # 文件 IPC 客户端
 │   ├── compare.py / report.py         # 快照、对比、报告
 │   ├── draw_analysis.py / texture_analysis.py
+│   ├── imagediff.py                   # PNG 解码/编码 + 图像差异（diff_textures）
 │   ├── malioc.py / aoc.py             # 离线着色器编译器
 │   ├── params.py                      # 参数容错
 │   └── result_cache.py                # 大结果缓存 + 分页
@@ -83,6 +84,7 @@ RenderDocMCP/
 | `get_debug_messages` | 抓帧里的 API 验证/驱动调试消息（Vulkan 验证层、KHR_debug、D3D 调试层）和回放期警告；按 (id, 文本) 归并计数，可按严重度/类别/来源/文本/事件范围过滤。数据来自 UI 侧 `ctx.DebugMessages()`，不占回放线程；抓帧时没开验证层则为空，不代表帧合法 |
 | `render_overlay` | 在一个 DC 上渲染 RenderDoc 调试 overlay（在手机上回放时由手机 GPU 渲染），存成 PNG 并给出数字：depth / stencil（通过 vs 失败像素）、backface_cull、drawcall、wireframe、viewport_scissor（带视口/裁剪矩形）、nan、clipping、quad_overdraw_draw/pass（逐像素 overdraw 计数：均值/最大/直方图）、triangle_size_draw/pass（按三角形面积分桶的像素数）。`services/targets.py` 统一解析 "event 的 color0/depth 是哪张图"（Vulkan 走 render pass 模型）。实测：depth 的通过/失败像素与 `get_draw_coverage` 逐像素一致；quad overdraw 在 GL/GLES 上全 0，结果里带 `supported: false` 和提示；`clear_before_*` 的纹理无数据，不提供 |
 | `get_gpu_counters` | 回放设备（手机）的硬件计数器，按 DC 取值。先不带参数列出可用集合：Mali-G610 上 **GLES 抓帧有 GPU Duration + 37 个 Arm HWCPipe 计数器**（外部内存读写字节、shader 各类周期、Early/LateZ、Tiles、Pixels…），**Vulkan 抓帧只有 GPU Duration 和 Samples Passed**（无 Arm 计数器）。选择器：短名 / 计数器名 / id / `@arm` `@generic` `@all`。Arm 计数器是周期采样后摊到各事件上的，逐 DC 值是小数估计，只用于排序和前后对比。GPU 时间随手机 GPU 频率变化（同一批 DC 重复测量 27.7–29.5 ms，`get_action_timings` 在 28 ms 与 20–24 ms 间跳变），所以对比要用 `repeat`（3–5 次取中位数，返回 run_totals 和 run_spread_pct）。Vulkan 的 Samples Passed 与 depth overlay 覆盖像素逐像素一致 |
+| `diff_textures` | 两张图的像素差异：数量/比例、最大差、各通道最大差、rmse/psnr、包围盒、差异最集中的网格区域，并写热力图 PNG。每一侧可以是 PNG 文件、某事件的渲染目标（event_id+target）或某资源（可带 event_id）；B 侧没写的字段继承 A（`event_id_a=100, event_id_b=200` = 这两个事件之间目标变了什么）。跨抓帧对比：先在各抓帧里 `save_texture`，再用 `path_a/path_b` 比。逻辑在 `mcp_server/imagediff.py`（只依赖 zlib 的 PNG 解码/编码，2322×1080 解码约 1 s）。按 8-bit PNG 比较，HDR 目标会被导出截断。实测不变量：DC 前后同一目标的差异像素数 ≤ 该 DC 通过深度测试的像素数 |
 | `find_pixels` | 按通道条件找像素（网格采样，带包围盒） |
 | `get_cached_message` | 超大结果自动缓存后的分页/搜索；列表按条目分页，超大的非列表字段（如 shader 源码）按行分页；打开新抓帧时清空 |
 | （实现说明）`analyze_state_changes` / `diagnose_mobile_risks` | GL 下不逐 DC 回放：`services/gl_stream.py` 读调用流，`services/gl_state.py` 跟踪 glEnable/glBlendFunc/glUseProgram 等还原每个 DC 的状态；discard 检测按 program 缓存。839 DC 的帧 118s→0.2s、115s→13s，结果与回放路径一致。非 GL 仍走回放 |

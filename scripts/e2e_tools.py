@@ -211,6 +211,8 @@ async def t_event_targets(client, mode):
     check("event targets: pixel_history resolves the same texture", ph["resource_id"] == rid, "%d modifications" % ph["total_count"])
     fp = await call(client, "find_pixels", event_id=eid, filters={"min_r": 0.0}, max_probes=16)
     check("event targets: find_pixels resolves the same texture", fp["resource_id"] == rid)
+    by_res = await call(client, "pick_pixel", x=10, y=10, resource_id=rid)
+    check("event targets: an existing resource_id is found", by_res["resource_id"] == rid and by_res["format"] == pp["format"], rid)
     dp = await call(client, "pick_pixel", x=10, y=10, event_id=eid, target="depth")
     check("event targets: depth target of the same event", dp["resource_id"] != rid, dp["format"])
 
@@ -224,9 +226,59 @@ async def t_event_targets(client, mode):
             check("errors propagate: %s %s" % (tool, "resource" if "resource_id" in args else "event 1"), True)
 
 
+async def t_diff_textures(client, mode):
+    eid = await pick_draw(client)
+    cov = (await call(client, "get_draw_coverage", event_ids=[eid]))["draws"][0]
+    rid = (await call(client, "pick_pixel", x=0, y=0, event_id=eid))["resource_id"]
+    print("     draw event %d writes %s: coverage passed=%d failed=%d" % (eid, rid, cov["passed"], cov["failed"]))
+
+    same = await call(client, "diff_textures", event_id_a=eid, event_id_b=eid)
+    check("diff: a target against itself is identical", same["identical"] and same["differing_pixels"] == 0,
+          "%dx%d" % (same["width"], same["height"]))
+
+    # a pixel only changes if this draw wrote it: differing pixels <= pixels that passed its depth test
+    before = await call(client, "diff_textures", resource_id_a=rid, event_id_a=eid - 1, event_id_b=eid, threshold=0)
+    check("diff: draw changes at most the pixels it shaded", before["differing_pixels"] <= cov["passed"],
+          "differing=%d passed=%d (%.1f%% of the target)" % (before["differing_pixels"], cov["passed"], before["differing_pct"]))
+    if cov["passed"] >= 1000:
+        check("diff: draw with real coverage changes something", before["differing_pixels"] > 0 and before["bounding_box"] is not None,
+              str(before["bounding_box"]))
+        bb = before["bounding_box"]
+        check("diff: bounding box inside the target", 0 <= bb["x0"] <= bb["x1"] < before["width"] and 0 <= bb["y0"] <= bb["y1"] < before["height"])
+        check("diff: regions account for the differing pixels", sum(r["differing_pixels"] for r in before["regions"]) <= before["differing_pixels"] and before["regions"][0]["differing_pixels"] > 0)
+    check("diff: heat map is a PNG", png_ok(before["heat_map_path"]), before["heat_map_path"])
+    check("diff: sides describe the capture textures", before["side_a"]["resource_id"] == rid == before["side_b"]["resource_id"] and before["side_a"]["format"])
+
+    # the same comparison against a file saved from the capture gives the same numbers
+    path = os.path.join(os.environ.get("TEMP", "."), "renderdoc_mcp", "e2e_diff_ref_%s.png" % mode)
+    await call(client, "save_texture", resource_id=rid, event_id=eid - 1, output_path=path)
+    vs_file = await call(client, "diff_textures", resource_id_a=rid, event_id_a=eid, path_b=path)
+    check("diff: capture vs saved file == capture vs capture", vs_file["differing_pixels"] == before["differing_pixels"] and vs_file["max_delta"] == before["max_delta"],
+          "%d / %d" % (vs_file["differing_pixels"], before["differing_pixels"]))
+    t = await call(client, "diff_textures", resource_id_a=rid, event_id_a=eid - 1, event_id_b=eid, threshold=255)
+    check("diff: threshold 255 tolerates everything but is still not 'identical'", t["differing_pixels"] == 0 and t["identical"] is False)
+
+    sizes = {}
+    for tex in (await call(client, "list_frame_textures", top_n=50))["textures"]:
+        sizes.setdefault((tex["width"], tex["height"]), tex["resource_id"])
+    small = [v for k, v in sizes.items() if k != (same["width"], same["height"]) and k[0] > 0]
+    if small:
+        mism = await call(client, "diff_textures", resource_id_a=rid, event_id_a=eid, resource_id_b=small[0])
+        check("diff: different sizes are reported, not raised", mism["comparable"] is False and "size differs" in mism["reason"], mism.get("reason"))
+    else:
+        print("     (no texture of another size in this capture: size mismatch not exercised on the device)")
+    for name, args in (("side B empty", dict(event_id_a=eid)), ("missing file", dict(path_a="Z:/nope.png", path_b="Z:/nope2.png"))):
+        try:
+            await call(client, "diff_textures", **args)
+            check("diff error: " + name, False, "no error raised")
+        except RuntimeError:
+            check("diff error: " + name, True)
+
+
 TESTS = {
     "get_debug_messages": t_get_debug_messages,
     "event_targets": t_event_targets,
+    "diff_textures": t_diff_textures,
     "render_overlay": t_render_overlay,
     "get_gpu_counters": t_get_gpu_counters,
 }

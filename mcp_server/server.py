@@ -4,14 +4,16 @@ FastMCP 2.0 server providing access to RenderDoc capture data.
 """
 
 import os
+import tempfile
 import time
+import uuid
 from typing import Literal
 
 from fastmcp import FastMCP
 
 from .bridge.client import RenderDocBridge, RenderDocBridgeError
 from .config import settings
-from . import compare, draw_analysis, report, result_cache, texture_analysis
+from . import compare, draw_analysis, imagediff, report, result_cache, texture_analysis
 from .params import (
     LInt, OptInt, OptIntList, ReqInt, StageOpt, StageReq, StageVP, StageVPCOpt,
 )
@@ -1444,6 +1446,96 @@ def get_gpu_counters(
         if value is not None:
             params[key] = value
     return bridge.call("get_gpu_counters", params, timeout=_LONG_TIMEOUT)
+
+
+def _diff_side(label: str, event_id: int | None, target: str, resource_id: str | None, path: str | None,
+               folder: str) -> tuple[str, dict]:
+    """(png path, description) of one side of a diff: a file as it is, or a texture / render target saved from the capture"""
+    if path:
+        if not os.path.isfile(path):
+            raise ValueError(f"side {label}: file not found: {path}")
+        return path, {"source": "file", "path": path}
+    if event_id is None and resource_id is None:
+        raise ValueError(f"side {label}: give path, event_id (with target) or resource_id")
+    out = os.path.join(folder, f"{uuid.uuid4().hex[:8]}_{label}.png")
+    params: dict[str, object] = {"output_path": out, "target": target, "file_type": "png"}
+    if event_id is not None:
+        params["event_id"] = event_id
+    if resource_id is not None:
+        params["resource_id"] = resource_id
+    saved = bridge.call("save_texture", params, timeout=300.0)
+    desc = {"source": "capture", "event_id": event_id, "target": target if resource_id is None else None,
+            "resource_id": saved.get("resource_id"), "name": saved.get("name"), "format": saved.get("format"),
+            "width": saved.get("width"), "height": saved.get("height"), "path": out}
+    return out, desc
+
+
+@mcp.tool
+def diff_textures(
+    event_id_a: OptInt = None,
+    target_a: str = "color0",
+    resource_id_a: str | None = None,
+    path_a: str | None = None,
+    event_id_b: OptInt = None,
+    target_b: str | None = None,
+    resource_id_b: str | None = None,
+    path_b: str | None = None,
+    threshold: int = 0,
+    ignore_alpha: bool = True,
+    output_path: str | None = None,
+    grid: int = 8,
+) -> dict:
+    """
+    Pixel diff of two images: counts and bounds what differs and writes a heat map PNG.
+
+    Each side is one of
+      - a PNG file (path_a / path_b): a render saved earlier, e.g. with save_texture from ANOTHER capture;
+      - the render target of an event (event_id + target "color0".. / "depth");
+      - a texture (resource_id), optionally as it is at event_id.
+    Side B inherits what it does not say from side A (target, resource_id), so
+    `diff_textures(event_id_a=100, event_id_b=200)` answers "what did the draws between these events change in
+    the colour target"; `diff_textures(event_id_a=100, path_b="before.png")` compares with a file.
+
+    Typical uses: verify that a shader / state change fixed a bug or left the picture unchanged (before / after
+    captures, or before / after a replaced shader at the same event); find what a pass changed; regression
+    check of an optimisation (identical or within a threshold).
+
+    Args:
+        threshold: per-channel difference (0-255) tolerated before a pixel counts as different (0 = exact)
+        ignore_alpha: leave alpha out of the comparison (default; render targets often hold garbage alpha)
+        output_path: where to write the heat map (default %TEMP%/renderdoc_mcp/diffs/diff_<id>.png): differing pixels
+            coloured by size (dark red = small, yellow/white = large) over a dimmed copy of side A
+        grid: the image is split into grid x grid cells for the "regions" ranking
+
+    Returns identical, differing_pixels / pct, max_delta (and per channel), mean delta over the differing pixels,
+    rmse and psnr_db, the bounding box, the busiest regions, both sides' descriptions and heat_map_path. Images
+    of different size are reported with comparable=false (no diff).
+    Limits: compared as 8-bit PNGs, so float / HDR targets are clamped by the export and depth is greyscale;
+    use the same API / device on both sides, GPU differences show up as small deltas (use threshold).
+    """
+    folder = os.path.join(tempfile.gettempdir(), "renderdoc_mcp", "diffs")
+    os.makedirs(folder, exist_ok=True)
+    if event_id_b is not None or resource_id_b is not None or path_b is not None:
+        t_b = target_b if target_b is not None else target_a
+        r_b = resource_id_b if resource_id_b is not None else (resource_id_a if path_b is None else None)
+    else:
+        raise ValueError("side B is empty: give path_b, event_id_b or resource_id_b")
+    file_a, side_a = _diff_side("a", event_id_a, target_a, resource_id_a, path_a, folder)
+    file_b, side_b = _diff_side("b", event_id_b, t_b, r_b, path_b, folder)
+    with open(file_a, "rb") as f:
+        img_a = imagediff.decode_png(f.read())
+    with open(file_b, "rb") as f:
+        img_b = imagediff.decode_png(f.read())
+    result = imagediff.diff_images(img_a, img_b, threshold=threshold, ignore_alpha=ignore_alpha, grid=grid)
+    png = result.pop("heatmap_png", None)
+    if png is not None:
+        heat = output_path or os.path.join(folder, f"diff_{uuid.uuid4().hex[:8]}.png")
+        os.makedirs(os.path.dirname(os.path.abspath(heat)), exist_ok=True)
+        with open(heat, "wb") as f:
+            f.write(png)
+        result["heat_map_path"] = heat
+    result["side_a"], result["side_b"] = side_a, side_b
+    return result
 
 
 @mcp.tool

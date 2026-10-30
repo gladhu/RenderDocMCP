@@ -45,12 +45,15 @@ def resolve_target(ctx, controller, event_id, resource_id, target, textures=None
     so the render-pass model is built once.
     """
     textures = list(controller.GetTextures()) if textures is None else textures
-    by_id = dict((str(t.resourceId), t) for t in textures)
     if resource_id:
-        rid = str(Parsers.parse_resource_id(resource_id))
-        if rid not in by_id:
-            raise ValueError("Texture not found: %s" % resource_id)
-        return by_id[rid]
+        # by number, as ResourceService does: a ResourceId built from a number is not == the real object in
+        # this build (the old object comparison never found any texture)
+        want = Parsers.extract_numeric_id(str(resource_id))
+        for tex in textures:
+            if Parsers.extract_numeric_id(str(tex.resourceId)) == want:
+                return tex
+        raise ValueError("Texture not found: %s" % resource_id)
+    by_id = dict((str(t.resourceId), t) for t in textures)
     if event_id is None:
         raise ValueError("event_id or resource_id is required")
     action = ctx.GetAction(int(event_id))
