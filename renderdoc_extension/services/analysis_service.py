@@ -18,6 +18,7 @@ import renderdoc as rd
 
 from .gl_state import STATE_CALLS, draw_state, track_draws
 from .draw_targets import event_targets
+from .targets import resolve_target
 from .gl_stream import collect_stream
 from ..utils import Helpers, Parsers
 
@@ -494,26 +495,8 @@ class AnalysisService:
     # ==================== Texture export / pixel pick ====================
 
     def _resolve_texture(self, controller, event_id, resource_id, target):
-        if resource_id:
-            rid = Parsers.parse_resource_id(resource_id)
-            for tex in controller.GetTextures():
-                if tex.resourceId == rid:
-                    return tex
-            raise ValueError("Texture not found: %s" % resource_id)
-        action = self.ctx.GetAction(event_id)
-        if action is None:
-            raise ValueError("Event not found: %d" % event_id)
-        if target == "depth":
-            rid = action.depthOut
-        else:
-            idx = int(target.replace("color", "") or 0) if target.startswith("color") else 0
-            rid = action.outputs[idx] if idx < len(action.outputs) else rd.ResourceId.Null()
-        if rid == rd.ResourceId.Null():
-            raise ValueError("Event %d has no %s target" % (event_id, target))
-        for tex in controller.GetTextures():
-            if tex.resourceId == rid:
-                return tex
-        raise ValueError("Target texture not found")
+        """Texture by resource id, or the colour / depth target of an event (Vulkan: from the render pass)"""
+        return resolve_target(self.ctx, controller, event_id, resource_id, target)
 
     def save_texture(self, output_path, event_id=None, resource_id=None, target="color0", file_type="png"):
         """Save a texture (or the current render target of an event) to a local file"""

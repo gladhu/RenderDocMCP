@@ -163,6 +163,8 @@ get_action_timings(marker_filter="Camera.Render", exclude_markers=["GUI.Repaint"
 - 访问 ReplayController 通过 `BlockInvoke`。有 PySide2 时 QTimer 在 UI 线程轮询；没有 PySide2 时由工作线程轮询，
   再用 `MiniQtHelper.InvokeOntoUIThread` 交给 UI 线程（传入的回调是创建一次后一直持有的对象：qrenderdoc 的回调胶水
   在不持有 GIL 时修改它的引用计数）
+- `BlockInvoke` 会吞掉回调里抛出的异常（调用正常返回，结果留空）。门面的 `_invoke` 经 `utils/invoke.py` 的 `guarded_invoke` 捕获后在调用线程重新抛出，工具出错就是错误而不是 `null`；服务里仍有的 `result["error"]` 写法保持有效
+- "event 的 color0/depth 是哪张图"统一走 `services/targets.py` 的 `resolve_target`（D3D/GL 读 `action.outputs`，Vulkan 走 render pass 模型），`pick_pixel` / `save_texture` / `read_texture_stats` / `pixel_history` / `find_pixels` / `render_overlay` 共用
 - 枚举名用整数表（`utils/helpers.py` 的 `_ENUM_TABLES`），不依赖各构建 SWIG 枚举的反射方式
 - 更新扩展后要重启 RenderDoc（qrenderdoc 会一直持有已加载的模块）
 - 测试：`python -m unittest discover -s tests`（离线）；`scripts/e2e_check.py gles|vulkan`（需已打开对应抓帧）

@@ -5,6 +5,7 @@ Uses BlockInvoke to marshal calls to the replay thread.
 """
 
 from .utils import Helpers
+from .utils.invoke import guarded_invoke
 from .services import (
     CaptureManager,
     ActionService,
@@ -62,8 +63,8 @@ class RenderDocFacade:
         self._counters = CounterService(ctx, self._invoke)
 
     def _invoke(self, callback):
-        """Invoke callback on replay thread via BlockInvoke"""
-        self.ctx.Replay().BlockInvoke(callback)
+        """Invoke callback on replay thread via BlockInvoke; what the callback raises is raised here"""
+        guarded_invoke(self.ctx.Replay().BlockInvoke, callback)
 
     # ==================== Capture Management ====================
 

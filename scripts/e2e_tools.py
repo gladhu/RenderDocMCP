@@ -196,8 +196,37 @@ async def t_get_gpu_counters(client, mode):
         check("counters: only-unknown selectors raise", "Available" in str(e), str(e)[-80:])
 
 
+async def t_event_targets(client, mode):
+    """Tools that take event_id + target must find the render target on every API, and must fail loudly"""
+    eid = await pick_draw(client)
+    pp = await call(client, "pick_pixel", x=10, y=10, event_id=eid)
+    check("event targets: pick_pixel returns a pixel (not null)", isinstance(pp, dict) and len(pp["float"]) == 4, "%s %s" % (pp["format"], pp["resource_id"]))
+    rid = pp["resource_id"]
+    st = await call(client, "read_texture_stats", event_id=eid)
+    check("event targets: read_texture_stats resolves the same texture", st["resource_id"] == rid and len(st["max"]) == 4)
+    path = os.path.join(os.environ.get("TEMP", "."), "renderdoc_mcp", "e2e_target_%s.png" % mode)
+    sv = await call(client, "save_texture", event_id=eid, output_path=path)
+    check("event targets: save_texture writes the target", sv["resource_id"] == rid and png_ok(path), path)
+    ph = await call(client, "pixel_history", x=10, y=10, event_id=eid)
+    check("event targets: pixel_history resolves the same texture", ph["resource_id"] == rid, "%d modifications" % ph["total_count"])
+    fp = await call(client, "find_pixels", event_id=eid, filters={"min_r": 0.0}, max_probes=16)
+    check("event targets: find_pixels resolves the same texture", fp["resource_id"] == rid)
+    dp = await call(client, "pick_pixel", x=10, y=10, event_id=eid, target="depth")
+    check("event targets: depth target of the same event", dp["resource_id"] != rid, dp["format"])
+
+    for tool, args in (("pick_pixel", dict(x=1, y=1, event_id=1)), ("save_texture", dict(event_id=1, output_path=path)),
+                       ("read_texture_stats", dict(event_id=1)), ("pixel_history", dict(x=1, y=1, event_id=1)),
+                       ("sample_pixel_region", dict(event_id=1)), ("pick_pixel", dict(x=1, y=1, resource_id="ResourceId::99999999"))):
+        try:
+            r = await call(client, tool, **args)
+            check("errors propagate: %s %s" % (tool, "resource" if "resource_id" in args else "event 1"), False, "returned %s instead of an error" % str(r)[:60])
+        except RuntimeError:
+            check("errors propagate: %s %s" % (tool, "resource" if "resource_id" in args else "event 1"), True)
+
+
 TESTS = {
     "get_debug_messages": t_get_debug_messages,
+    "event_targets": t_event_targets,
     "render_overlay": t_render_overlay,
     "get_gpu_counters": t_get_gpu_counters,
 }
