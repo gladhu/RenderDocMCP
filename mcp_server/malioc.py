@@ -15,7 +15,10 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 
+_REPO_MALIOC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "malioc", "malioc.exe")
+
 _CANDIDATES = [
+    _REPO_MALIOC,  # scripts/install_malioc.py
     r"C:\Program Files\Arm\Arm Performance Studio*\mali_offline_compiler\malioc.exe",
     r"D:\Program Files\Arm\Arm Performance Studio*\mali_offline_compiler\malioc.exe",
     r"C:\Program Files\Arm\Arm Mobile Studio*\mali_offline_compiler\malioc.exe",
@@ -29,7 +32,7 @@ class MaliocError(Exception):
 
 
 def find_malioc() -> str:
-    """MALIOC_PATH env > malioc on PATH > Arm Performance Studio install dirs"""
+    """MALIOC_PATH env > malioc on PATH > tools/malioc in this repo > Arm Performance Studio install dirs"""
     env = os.environ.get("MALIOC_PATH")
     if env and os.path.isfile(env):
         return env

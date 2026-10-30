@@ -183,7 +183,7 @@ uv tool update-shell  # 添加到 PATH
 | `get_post_vs_data` | 按索引顺序返回变换后顶点；只解码 float/half |
 | `export_mesh` | 按索引缓冲把 post-VS 网格导出为 OBJ（float/half） |
 
-> malioc 需要安装 Arm Performance Studio（`malioc` 在 PATH 里），或者设置环境变量 `MALIOC_PATH`。`compiler="mali"` 时 `gpu` 填真机的 GPU 型号，例如 `Mali-G610`。
+> malioc：运行一次 `python scripts/install_malioc.py`，从 Arm 官方地址下载并解出到 `tools/malioc/`（已 gitignore，不需要管理员权限）。Arm 许可不允许再分发，所以二进制不进仓库。查找顺序：`MALIOC_PATH` > PATH > `tools/malioc` > 已安装的 Arm Performance Studio。`compiler="mali"` 时 `gpu` 填真机的 GPU 型号，例如 `Mali-G610`。
 >
 > Adreno 分析需要 Qualcomm Adreno SDK 里的 `aoc`（在 PATH 里，或设置 `AOC_PATH`）。`compiler="adreno"` 时 `gpu` 填架构，例如 `a650`（默认）、`a730`、`a740`。aoc 没有周期模型，开销用总指令数表示，只能在 Adreno shader 之间比较，不能和 Mali 的周期数互比。
 >
@@ -405,7 +405,7 @@ export_mesh(event_id=5503, output_path="D:\\tmp\\mesh.obj")
 - Python 3.10+
 - [uv](https://docs.astral.sh/uv/)
 - RenderDoc 1.20+
-- 移动端着色分析：Arm Performance Studio（`malioc`，或设置 `MALIOC_PATH`）；Adreno 需 Qualcomm Adreno SDK（`aoc`，或设置 `AOC_PATH`）
+- 移动端着色分析：`python scripts/install_malioc.py`（或自行安装 Arm Performance Studio / 设置 `MALIOC_PATH`）；Adreno 需 Qualcomm Adreno SDK（`aoc`，或设置 `AOC_PATH`）
 - 远程回放：RenderDoc 已通过 ADB 等连上目标设备，并在 Replay Context 中选中该设备
 
 > 已在 Windows + DirectX 11，以及 Windows + 移动端 GLES 远程回放场景下使用。Linux/macOS + Vulkan/OpenGL 可能也能运行，但尚未系统验证。
