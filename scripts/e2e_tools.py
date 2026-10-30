@@ -135,9 +135,71 @@ async def t_render_overlay(client, mode):
     check("overlay: bridge still healthy after errors", again["stats"]["by_label"]["draw"]["pixels"] > 0 or cov["passed"] == 0)
 
 
+async def t_get_gpu_counters(client, mode):
+    lst = await call(client, "get_gpu_counters")
+    names = [c["name"] for c in lst["available"]]
+    check("counters: list has GPU Duration", "GPU Duration" in names, "%d available %s" % (lst["available_count"], lst["by_vendor"]))
+    check("counters: list entries are complete", all({"id", "unit", "vendor", "result", "bytes", "category"} <= set(c) for c in lst["available"]))
+    if mode == "gles":
+        check("counters: Arm HWCPipe counters on GLES", lst["by_vendor"].get("arm", 0) >= 30, str(lst["by_vendor"]))
+    else:
+        check("counters: Vulkan has Samples Passed", "Samples Passed" in names)
+
+    r = await call(client, "get_gpu_counters", counters=["gpu_duration"], top_n=3)
+    c = r["counters"][0]
+    check("counters: GPU Duration per event", c["events"] == r["events_in_scope"] > 0 and c["total"] > 0,
+          "events=%d total=%.2f ms" % (c["events"], c["total"] * 1000))
+    check("counters: top events sorted", [e["value"] for e in c["top_events"]] == sorted((e["value"] for e in c["top_events"]), reverse=True))
+    ev = await call(client, "get_gpu_counters", counters=["gpu_duration"], include_events=True, event_id_max=400)
+    sub = ev["counters"][0]["total"]                       # same call: the table and the total share one measurement
+    check("counters: per-event table sums to the total (same call)", abs(sum(e["GPU Duration"] for e in ev["events"]) - sub) <= 1e-4 * sub,
+          "%d events, %.3f ms" % (len(ev["events"]), sub * 1000))
+    # GPU time moves with the phone's GPU clock between measurements, so single numbers are compared loosely
+    # and repeat is what makes them usable
+    rp = await call(client, "get_gpu_counters", counters=["gpu_duration"], repeat=5, top_n=3)
+    rc = rp["counters"][0]
+    check("counters: repeat=5 reports 5 run totals and a spread", rp["repeat"] == 5 and len(rc["run_totals"]) == 5 and rc["run_spread_pct"] is not None,
+          "median total %.2f ms, runs %s ms, spread %.1f%%" % (rc["total"] * 1000, [round(t * 1000, 1) for t in rc["run_totals"]], rc["run_spread_pct"]))
+    check("counters: repeat median total lies within the run totals", min(rc["run_totals"]) * 0.7 <= rc["total"] <= max(rc["run_totals"]) * 1.3)
+    top = rc["top_events"]
+    timings = await call(client, "get_action_timings", event_ids=[e["event_id"] for e in top])
+    got = dict((t["event_id"], t["duration_ms"]) for t in timings["timings"])
+    ratios = [got[e["event_id"]] / (e["value"] * 1000) for e in top if e["event_id"] in got]
+    check("counters: get_action_timings same order of magnitude as the counter", len(ratios) == len(top) and all(0.3 <= x <= 1.5 for x in ratios),
+          "timings/counter = %s" % [round(x, 2) for x in ratios])
+
+    if mode == "vulkan":
+        sp = await call(client, "get_gpu_counters", counters=["samples_passed"], top_n=5)
+        cov = {d["event_id"]: d["passed"] for d in (await call(client, "get_draw_coverage", event_ids=[e["event_id"] for e in sp["counters"][0]["top_events"]]))["draws"]}
+        big = [e for e in sp["counters"][0]["top_events"] if cov.get(e["event_id"], 0) >= 100000]
+        check("counters: Samples Passed ~ depth-test coverage on big draws",
+              bool(big) and all(abs(e["value"] - cov[e["event_id"]]) <= 0.01 * cov[e["event_id"]] for e in big),
+              str([(e["event_id"], e["value"], cov[e["event_id"]]) for e in big]))
+    else:
+        want = ["ExternalMemoryReadBytes", "FragmentCycles", "Tiles", "EarlyZKilled"]
+        arm = await call(client, "get_gpu_counters", counters=want, top_n=2)
+        check("counters: Arm counters fetched by name", [x["name"].strip() for x in arm["counters"]] == want and arm["unknown_selectors"] == [],
+              "values=%d" % arm["values_returned"])
+        check("counters: external memory read is non-zero", arm["counters"][0]["total"] > 0, "%.1f MB" % (arm["counters"][0]["total"] / 1e6))
+        grp = await call(client, "get_gpu_counters", counters=["@arm"], top_n=1, event_id_min=500, event_id_max=700)
+        check("counters: @arm group fetches every Arm counter", len(grp["counters"]) == lst["by_vendor"]["arm"],
+              "%d counters, %d events" % (len(grp["counters"]), grp["events_in_scope"]))
+    one = r["counters"][0]["top_events"][0]["event_id"]
+    part = await call(client, "get_gpu_counters", counters=["gpu_duration"], event_id_min=one, event_id_max=one)
+    check("counters: event range selects one event", part["events_in_scope"] == 1 and part["counters"][0]["events"] == 1)
+    mix = await call(client, "get_gpu_counters", counters=["gpu_duration", "no_such_counter"])
+    check("counters: unknown selector reported, known ones still fetched", mix["unknown_selectors"] == ["no_such_counter"] and len(mix["counters"]) == 1)
+    try:
+        await call(client, "get_gpu_counters", counters=["no_such_counter"])
+        check("counters: only-unknown selectors raise", False)
+    except RuntimeError as e:
+        check("counters: only-unknown selectors raise", "Available" in str(e), str(e)[-80:])
+
+
 TESTS = {
     "get_debug_messages": t_get_debug_messages,
     "render_overlay": t_render_overlay,
+    "get_gpu_counters": t_get_gpu_counters,
 }
 
 

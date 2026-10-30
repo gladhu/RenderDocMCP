@@ -17,6 +17,7 @@ from .services import (
     BandwidthService,
     DebugService,
     OverlayService,
+    CounterService,
 )
 
 
@@ -58,6 +59,7 @@ class RenderDocFacade:
         self._bandwidth = BandwidthService(ctx, self._invoke)
         self._debug = DebugService(ctx, self._invoke)
         self._overlay = OverlayService(ctx, self._invoke)
+        self._counters = CounterService(ctx, self._invoke)
 
     def _invoke(self, callback):
         """Invoke callback on replay thread via BlockInvoke"""
@@ -284,3 +286,7 @@ class RenderDocFacade:
     def render_overlay(self, **kwargs):
         """Render a debug overlay at an event, save it as an image and summarise its colours"""
         return self._overlay.render_overlay(**kwargs)
+
+    def get_gpu_counters(self, **kwargs):
+        """List the device's GPU counters, or fetch selected ones per event"""
+        return self._counters.get_gpu_counters(**kwargs)

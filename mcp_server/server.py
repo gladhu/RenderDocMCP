@@ -1393,6 +1393,60 @@ def render_overlay(
 
 
 @mcp.tool
+def get_gpu_counters(
+    counters: list[str] | None = None,
+    list_only: bool = False,
+    event_ids: OptIntList = None,
+    marker_filter: str | None = None,
+    event_id_min: OptInt = None,
+    event_id_max: OptInt = None,
+    top_n: LInt = 10,
+    include_events: bool = False,
+    repeat: LInt = 1,
+) -> dict:
+    """
+    Hardware performance counters of the replay device (the phone, for remote replay), per draw / dispatch.
+
+    Call with no arguments (or list_only=True) first: the available set depends on device, driver and API.
+    Measured on a Mali-G610 phone with official RenderDoc 1.46:
+    - OpenGL ES capture: GPU Duration + 37 Arm (HWCPipe) counters - ExternalMemoryReadBytes /
+      WriteBytes, shader cycles (arithmetic / load-store / texture / interpolator), Early/LateZ tests
+      and kills, Tiles, Pixels, Instructions, DivergedInstructions, tiler / fragment / vertex cycles ...
+    - Vulkan capture: only GPU Duration and Samples Passed. No Arm counters (need Streamline / gator).
+    So capture the same scene as GLES if a counter is needed that Vulkan does not offer.
+
+    Caveats: the Arm counters are sampled periodically and spread over the events, so per-draw values are
+    fractional estimates, small draws read near zero, and some read 0 on a device (ExternalMemoryWriteBytes
+    was 0 for the whole frame). Use them to rank draws and to compare before / after, not as exact counts;
+    totals over a pass or the frame are far more reliable than a single draw. GPU time also moves between
+    measurements with the phone's GPU clock: repeating the same call 8 times gave 27.7-29.5 ms for six draws
+    through this tool, while get_action_timings alternated between ~28 ms and ~20-24 ms. A single measurement is
+    therefore NOT enough for a before/after comparison: use repeat. GPU Duration and Samples Passed (Vulkan) come from real queries; Mali per-draw duration is inflated by tile flushes - prefer
+    estimate_shading_cost to rank shader cost.
+
+    Args:
+        counters: what to fetch. A short name (gpu_duration, samples_passed, ps_invocations, ...), a counter
+            name as listed (exact, else substring, case-insensitive: "ShaderCycles", "EarlyZKilled"), a numeric
+            id, or a group: "@arm", "@generic", "@all". Unknown / unavailable ones come back in unknown_selectors.
+        list_only: only list the counters (id, name, unit, vendor, description)
+        event_ids / marker_filter / event_id_min / event_id_max: which draws and dispatches
+        top_n: heaviest events per counter
+        include_events: also return the per-event table (can be large; the result cache pages it)
+        repeat: measure this many times (1-10) and use the per-event median; every counter then also reports
+            run_totals and run_spread_pct (max-min over median of the per-run totals). Use 3-5 for GPU time
+            comparisons, and distrust a change smaller than the spread.
+    Returns per counter: total (for additive units), mean, min, max, number of events and the top events.
+    """
+    params: dict[str, object] = {"list_only": list_only, "top_n": top_n, "include_events": include_events,
+                                 "repeat": repeat}
+    for key, value in (("counters", counters), ("event_ids", event_ids), ("marker_filter", marker_filter),
+                       ("event_id_min", event_id_min), ("event_id_max", event_id_max)):
+        if value is not None:
+            params[key] = value
+    return bridge.call("get_gpu_counters", params, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
 def get_api_calls(
     event_id: OptInt = None,
     start_event: OptInt = None,

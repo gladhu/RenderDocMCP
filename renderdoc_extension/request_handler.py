@@ -59,6 +59,7 @@ class RequestHandler:
             "export_mesh": self._handle_export_mesh,
             "get_debug_messages": self._handle_get_debug_messages,
             "render_overlay": self._handle_render_overlay,
+            "get_gpu_counters": self._handle_get_gpu_counters,
         }
 
     def handle(self, request):
@@ -505,4 +506,21 @@ class RequestHandler:
             resource_id=params.get("resource_id"),
             output_path=params.get("output_path"),
             analyze=bool(params.get("analyze", True)),
+        )
+
+    def _handle_get_gpu_counters(self, params):
+        """Handle get_gpu_counters request"""
+        def opt_int(key):
+            value = params.get(key)
+            return None if value is None else int(value)
+        return self.facade.get_gpu_counters(
+            counters=params.get("counters"),
+            list_only=bool(params.get("list_only", False)),
+            event_ids=params.get("event_ids"),
+            marker_filter=params.get("marker_filter"),
+            event_id_min=opt_int("event_id_min"),
+            event_id_max=opt_int("event_id_max"),
+            top_n=int(params.get("top_n", 10)),
+            include_events=bool(params.get("include_events", False)),
+            repeat=int(params.get("repeat", 1)),
         )
