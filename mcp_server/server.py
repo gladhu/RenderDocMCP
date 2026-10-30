@@ -218,13 +218,13 @@ def get_shader_info(
     stage: StageReq,
 ) -> dict:
     """
-    Get shader information for a specific stage at a given event.
+    Shader disassembly, constant buffer values and resource bindings for a stage at an event. This is the legend
+    for debug_shader traces on Vulkan (the SPIR-V ids). For the shader's source text / SPIR-V binary use
+    get_shader_source; for one constant buffer by name use read_constant_buffer.
 
     Args:
         event_id: The event ID to inspect the shader at
         stage: The shader stage (vertex, hull, domain, geometry, pixel, compute)
-
-    Returns shader disassembly, constant buffer values, and resource bindings.
     """
     return bridge.call("get_shader_info", {"event_id": event_id, "stage": stage})
 
@@ -254,12 +254,12 @@ def get_buffer_contents(
 @mcp.tool
 def get_texture_info(resource_id: str) -> dict:
     """
-    Get metadata about a texture resource.
+    Lightweight metadata of one texture: dimensions, format, mip levels, MSAA, byte size.
+    For the texture's name and the events that use it, call get_texture_detail instead (a superset of this);
+    to find textures in the first place use list_frame_textures.
 
     Args:
         resource_id: The resource ID of the texture
-
-    Includes dimensions, format, mip levels, and other properties.
     """
     return bridge.call("get_texture_info", {"resource_id": resource_id})
 
@@ -500,8 +500,9 @@ def get_shader_usage(
     event_id_max: OptInt = None,
 ) -> dict:
     """
-    Group draw calls by pixel shader: draw count, primitive count, sample
-    event ids and the most common bound textures (to identify the material).
+    Group draw calls by PIXEL shader: draw count, primitive count, sample event ids and the most common bound
+    textures (to identify the material). Filter by marker / event range. For every stage (vertex / pixel /
+    compute) over the whole frame use list_shaders.
     """
     return bridge.call(
         "get_shader_usage",
@@ -1025,7 +1026,8 @@ def list_frame_textures(
 
 @mcp.tool
 def get_texture_detail(resource_id: str) -> dict:
-    """Texture metadata plus the full GetUsage event list."""
+    """Everything get_texture_info returns, plus the texture's name and the full list of events that use it
+    (event_id + usage kind). For a buffer, or for read / write / clear classification, use get_resource_usage."""
     return bridge.call("get_texture_detail", {"resource_id": resource_id}, timeout=_LONG_TIMEOUT)
 
 
@@ -1059,8 +1061,9 @@ def read_texture_stats(
     target: str = "color0",
 ) -> dict:
     """
-    GPU min/max of a texture (GetMinMax). Depth targets are queried as CompType.Depth.
-    Flags: has_negative / has_inf / has_nan / all_zero.
+    Exact GPU min / max of a whole texture (GetMinMax), with flags has_negative / has_inf / has_nan / all_zero:
+    the cheapest "is this target empty / blown out / NaN" check. Depth targets are queried as CompType.Depth.
+    It says THAT something is there, not WHERE: use find_pixels or sample_pixel_region to locate it.
     """
     params: dict[str, object] = {"target": target}
     if event_id is not None:
@@ -1083,7 +1086,9 @@ def sample_pixel_region(
     anomaly_threshold: float = 10.0,
 ) -> dict:
     """
-    Grid-sample a region and report NaN / Inf / negative / extreme-bright hotspots.
+    Grid-sample a region and report NaN / Inf / negative / extreme-bright hotspots (a quick "is there garbage in
+    this target" check). To search for pixels by an arbitrary colour condition and get a bounding box use
+    find_pixels; for the exact min / max of the whole texture use read_texture_stats.
     """
     params: dict[str, object] = {
         "target": target, "x": x, "y": y,
@@ -1102,7 +1107,8 @@ def sample_pixel_region(
 
 @mcp.tool
 def get_resource_usage(resource_id: str) -> dict:
-    """Usage history of a texture or buffer: event_id, usage enum, read/write/clear kind."""
+    """Usage history of a texture or a buffer: event_id, usage enum and read / write / clear kind.
+    To get the draw calls that use a resource (with their markers) use find_draws_by_resource."""
     return bridge.call("get_resource_usage", {"resource_id": resource_id}, timeout=_LONG_TIMEOUT)
 
 
@@ -1253,8 +1259,9 @@ def list_shaders(
     top_n: LInt = 50,
 ) -> dict:
     """
-    Unique shaders in the frame (draw + dispatch) with usage counts.
-    Omit stage to list vertex, pixel and compute.
+    Unique shaders in the frame (draw + dispatch) with usage counts and sample events, for any stage; omit stage
+    to list vertex, pixel and compute. For pixel shaders with the textures that identify the material, and for
+    marker / event-range filtering, use get_shader_usage.
     """
     params: dict[str, object] = {"top_n": top_n}
     if stage is not None:
@@ -1359,33 +1366,25 @@ def render_overlay(
     analyze: bool = True,
 ) -> dict:
     """
-    Render one of RenderDoc's debug overlays at a draw call on the replay device (the phone, for remote
-    replay), save it as a PNG you can look at, and summarise it in numbers.
-
-    The first tool to reach for when "why is this object not visible / wrong / expensive":
-    - depth / stencil: pixels of THIS draw that passed (green) or failed (red) the test. Everything failed =
-      hidden behind earlier geometry or wrong depth func/clear; passed but nothing visible = look elsewhere.
-    - backface_cull: kept (green) vs culled (red). Everything culled = wrong winding / cull mode.
-    - drawcall / wireframe: where the draw is and its triangle edges (wire pixel count).
-    - viewport_scissor: also returns the viewport and scissor rectangles; a draw clipped by a wrong scissor
-      shows up here.
-    - nan / clipping: pixels marked (count, colours); 0 marked = clean.
-    - quad_overdraw_draw / _pass: overdraw per pixel (this draw / the whole pass up to it): mean, max,
-      share of pixels shaded more than once, histogram. Counts only fragments that passed the depth test, in
-      2x2 quads (so edges between triangles show 2). The pass variant is the number to compare before/after
-      sorting or culling changes on a mobile GPU.
-    - triangle_size_draw / _pass: pixels by the area of the triangle covering them (<4 px, 4-16, ...);
-      lots of pixels in tiny triangles = geometry too dense for its screen size. Pixel-weighted: micro
-      triangles cover few pixels, so cross-check with estimate_geometry_cost.
+    Render one of RenderDoc's debug overlays at a draw call on the replay device (the phone, for remote replay), save
+    it as a PNG and summarise it in numbers. First tool for "why is this object missing / wrong / expensive".
+    - depth / stencil: pixels of THIS draw that passed (green) or failed (red). All failed = hidden or wrong depth
+      state; all passed but nothing visible = look elsewhere.
+    - backface_cull: kept vs culled (all culled = wrong winding / cull mode). drawcall / wireframe: where the draw is.
+    - viewport_scissor: also returns the viewport and scissor rectangles (a wrong scissor clips the draw).
+    - nan / clipping: marked pixel count; 0 = clean.
+    - quad_overdraw_draw / _pass: overdraw per pixel (this draw / whole pass so far): mean, max, share shaded more
+      than once, histogram; counts depth-passing fragments in 2x2 quads. NOT supported on OpenGL / GLES (the result
+      says so; use analyze_overdraw there).
+    - triangle_size_draw / _pass: pixels by the area of the triangle covering them; many pixels in tiny triangles =
+      geometry too dense for its screen size (pixel-weighted; cross-check with estimate_geometry_cost).
 
     Args:
-        event_id: a draw call (overlays need a draw; markers have none)
-        target: "color0".. or "depth" of that event (Vulkan: taken from the render pass), or give resource_id
-        output_path: where to write the PNG (default %TEMP%/renderdoc_mcp/overlays/overlay_e<event>_<overlay>.png);
-            open it to see the overlay
-        analyze: also read the overlay back and count (about 1 s on a phone, more transfer on big targets);
-            False only saves the image
-    clear_before_pass / clear_before_draw are not offered: their overlay texture carries no data.
+        event_id: a draw call (markers have no overlay)
+        target: "color0".. or "depth" of that event (Vulkan: from the render pass), or give resource_id
+        output_path: PNG path (default %TEMP%/renderdoc_mcp/overlays/overlay_e<event>_<overlay>.png)
+        analyze: also read the overlay back and count (~1 s on a phone); False only saves the image
+    
     """
     params: dict[str, object] = {"event_id": event_id, "overlay": overlay, "target": target, "analyze": analyze}
     if resource_id is not None:
@@ -1409,36 +1408,29 @@ def get_gpu_counters(
 ) -> dict:
     """
     Hardware performance counters of the replay device (the phone, for remote replay), per draw / dispatch.
+    Call with no arguments first: the set depends on device, driver and API. Mali-G610 with RenderDoc 1.46:
+    OpenGL ES captures offer GPU Duration + 37 Arm counters (ExternalMemoryReadBytes / WriteBytes, shader cycles,
+    Early / LateZ tests and kills, Tiles, Pixels, ...); Vulkan captures offer only GPU Duration and Samples Passed.
+    Capture the scene as GLES when an Arm counter is needed.
 
-    Call with no arguments (or list_only=True) first: the available set depends on device, driver and API.
-    Measured on a Mali-G610 phone with official RenderDoc 1.46:
-    - OpenGL ES capture: GPU Duration + 37 Arm (HWCPipe) counters - ExternalMemoryReadBytes /
-      WriteBytes, shader cycles (arithmetic / load-store / texture / interpolator), Early/LateZ tests
-      and kills, Tiles, Pixels, Instructions, DivergedInstructions, tiler / fragment / vertex cycles ...
-    - Vulkan capture: only GPU Duration and Samples Passed. No Arm counters (need Streamline / gator).
-    So capture the same scene as GLES if a counter is needed that Vulkan does not offer.
-
-    Caveats: the Arm counters are sampled periodically and spread over the events, so per-draw values are
-    fractional estimates, small draws read near zero, and some read 0 on a device (ExternalMemoryWriteBytes
-    was 0 for the whole frame). Use them to rank draws and to compare before / after, not as exact counts;
-    totals over a pass or the frame are far more reliable than a single draw. GPU time also moves between
-    measurements with the phone's GPU clock: repeating the same call 8 times gave 27.7-29.5 ms for six draws
-    through this tool, while get_action_timings alternated between ~28 ms and ~20-24 ms. A single measurement is
-    therefore NOT enough for a before/after comparison: use repeat. GPU Duration and Samples Passed (Vulkan) come from real queries; Mali per-draw duration is inflated by tile flushes - prefer
-    estimate_shading_cost to rank shader cost.
+    Caveats: Arm counters are sampled periodically and spread over events, so per-draw values are estimates (small
+    draws read ~0, some counters read 0 all frame): use them to rank and compare, and trust totals over a pass or the
+    frame more than one draw. GPU time moves with the phone's clock between measurements (same call 8 times:
+    27.7-29.5 ms), so ONE measurement cannot support a before/after claim: use repeat. Per-draw GPU time on a tile GPU
+    is inflated by tile flushes; prefer estimate_shading_cost to rank shader cost.
 
     Args:
-        counters: what to fetch. A short name (gpu_duration, samples_passed, ps_invocations, ...), a counter
-            name as listed (exact, else substring, case-insensitive: "ShaderCycles", "EarlyZKilled"), a numeric
-            id, or a group: "@arm", "@generic", "@all". Unknown / unavailable ones come back in unknown_selectors.
+        counters: short name (gpu_duration, samples_passed, ps_invocations, ...), counter name as listed (exact,
+            else substring: "ShaderCycles"), numeric id, or group "@arm" / "@generic" / "@all". Unknown or unavailable
+            ones come back in unknown_selectors.
         list_only: only list the counters (id, name, unit, vendor, description)
         event_ids / marker_filter / event_id_min / event_id_max: which draws and dispatches
         top_n: heaviest events per counter
-        include_events: also return the per-event table (can be large; the result cache pages it)
-        repeat: measure this many times (1-10) and use the per-event median; every counter then also reports
-            run_totals and run_spread_pct (max-min over median of the per-run totals). Use 3-5 for GPU time
-            comparisons, and distrust a change smaller than the spread.
-    Returns per counter: total (for additive units), mean, min, max, number of events and the top events.
+        include_events: also return the per-event table (can be large)
+        repeat: measure 1-10 times and use the per-event median; every counter then reports run_totals and
+            run_spread_pct (distrust a change smaller than the spread). Use 3-5 for GPU time comparisons.
+    Returns per counter: total (additive units only), mean, min, max, events and the top events.
+    
     """
     params: dict[str, object] = {"list_only": list_only, "top_n": top_n, "include_events": include_events,
                                  "repeat": repeat}
@@ -1487,32 +1479,25 @@ def diff_textures(
     grid: int = 8,
 ) -> dict:
     """
-    Pixel diff of two images: counts and bounds what differs and writes a heat map PNG.
-
-    Each side is one of
-      - a PNG file (path_a / path_b): a render saved earlier, e.g. with save_texture from ANOTHER capture;
-      - the render target of an event (event_id + target "color0".. / "depth");
-      - a texture (resource_id), optionally as it is at event_id.
-    Side B inherits what it does not say from side A (target, resource_id), so
-    `diff_textures(event_id_a=100, event_id_b=200)` answers "what did the draws between these events change in
-    the colour target"; `diff_textures(event_id_a=100, path_b="before.png")` compares with a file.
-
-    Typical uses: verify that a shader / state change fixed a bug or left the picture unchanged (before / after
-    captures, or before / after a replaced shader at the same event); find what a pass changed; regression
-    check of an optimisation (identical or within a threshold).
+    Pixel diff of two images: counts and bounds what differs and writes a heat map PNG. Each side is a PNG file
+    (path_a / path_b, e.g. saved with save_texture from ANOTHER capture), the render target of an event (event_id +
+    target "color0".. / "depth"), or a texture (resource_id, optionally as it is at event_id). Side B inherits what it
+    does not say from side A, so `diff_textures(event_id_a=100, event_id_b=200)` = what changed in the colour target
+    between those events, and `diff_textures(event_id_a=100, path_b="before.png")` compares with a file.
+    Uses: verify a shader / state change fixed a bug or left the picture unchanged, find what a pass changed,
+    regression-check an optimisation (identical, or within a threshold).
 
     Args:
         threshold: per-channel difference (0-255) tolerated before a pixel counts as different (0 = exact)
-        ignore_alpha: leave alpha out of the comparison (default; render targets often hold garbage alpha)
-        output_path: where to write the heat map (default %TEMP%/renderdoc_mcp/diffs/diff_<id>.png): differing pixels
-            coloured by size (dark red = small, yellow/white = large) over a dimmed copy of side A
-        grid: the image is split into grid x grid cells for the "regions" ranking
-
-    Returns identical, differing_pixels / pct, max_delta (and per channel), mean delta over the differing pixels,
-    rmse and psnr_db, the bounding box, the busiest regions, both sides' descriptions and heat_map_path. Images
-    of different size are reported with comparable=false (no diff).
-    Limits: compared as 8-bit PNGs, so float / HDR targets are clamped by the export and depth is greyscale;
-    use the same API / device on both sides, GPU differences show up as small deltas (use threshold).
+        ignore_alpha: leave alpha out (default; render targets often hold garbage alpha)
+        output_path: heat map PNG (default %TEMP%/renderdoc_mcp/diffs/diff_<id>.png): differing pixels coloured by
+            size over a dimmed copy of side A
+        grid: the image is split into grid x grid cells for the busiest-regions ranking
+    Returns identical, differing_pixels / pct, max_delta (also per channel), mean delta over differing pixels, rmse,
+    psnr_db, bounding_box, regions, both sides' descriptions and heat_map_path. Different sizes: comparable=false.
+    Compared as 8-bit PNGs: HDR targets are clamped by the export, depth is greyscale. Use the same API / device on
+    both sides; GPU differences appear as small deltas (use threshold).
+    
     """
     folder = os.path.join(tempfile.gettempdir(), "renderdoc_mcp", "diffs")
     os.makedirs(folder, exist_ok=True)
@@ -1568,44 +1553,31 @@ def replace_shader(
     dry_run: bool = False,
 ) -> dict:
     """
-    Edit a shader, rebuild it on the replay device and replay the capture with it - test a fix or an
-    optimisation without rebuilding the game.
+    Edit a shader, rebuild it ON THE REPLAY DEVICE (the phone's driver for remote replay) and replay with it: test a
+    fix or an optimisation without rebuilding the game. The shader bound to `stage` at `event_id` is replaced for
+    EVERY draw that uses it, and stays replaced for all other tools until revert_shader (or another capture is
+    opened). Loop: take the "before" picture / numbers first -> replace_shader -> measure (get_gpu_counters with
+    repeat=3, render_overlay) and look (diff_textures, save_texture) -> revert_shader. The default call (no edits)
+    rebuilds the original: the control for what a recompile alone changes.
 
-    The shader bound to `stage` at `event_id` is replaced for EVERY draw that uses it, and the replacement
-    stays active for all other tools until revert_shader (or another capture is opened). So the loop is:
-    replace_shader -> measure (get_gpu_counters(repeat=3), estimate_shading_cost, render_overlay, pixel reads)
-    and look (diff_textures against the picture before, save_texture) -> revert_shader. Take the "before" picture
-    / numbers FIRST; a rebuild with no edits (the default call) is the control that shows what a recompile alone
-    changes.
-
-    Compilation happens on the device (the phone's own driver for remote replay): compile errors and warnings come
-    back verbatim in compiler_output with compiled=false and nothing is replaced.
-
-    Starting point:
-      - OpenGL / OpenGL ES: the shader's GLSL source (get_shader_sources(event_ids=[e], stage=..) shows it).
-        Use `edits`: [{"find": "text in the source", "replace": "new text"}, ...] applied in order; every occurrence
-        is replaced, and a find that is not in the source is an error. Or pass the whole new text as `source`.
-        Examples: prepend "discard;" inside main to see which draws a shader belongs to (the picture loses them);
-        change a precision qualifier, drop a texture fetch, hard-code a branch, return a constant to test whether
-        a shader is the cause of a colour.
-      - Vulkan: shaders only exist as SPIR-V, so there is no text to edit. Pass a replacement SPIR-V binary as
-        `source_path` (a .spv file: raw binary, or base64 text) or `source` (base64), or Vulkan GLSL with
-        encoding="glsl" that matches the shader's inputs, outputs and descriptor bindings. A SPIR-V binary is
-        a few hundred KB of base64, too big to pass through the conversation: export the captured one with
-        get_shader_source(output_path=...) (it writes the base64), change it with a script or spirv-tools
-        (spirv-dis / spirv-as), save it and give the file as source_path. The binary is structurally validated
-        first (a truncated or non-SPIR-V blob is refused: the device accepts it without a message and the replay
-        then fails until the capture is reopened). With no source it rebuilds the original SPIR-V unchanged.
-    Result: replaced / compiled, compiler_output, a diff of the change (GLSL), hashes, the active replacements.
+    Compile errors come back verbatim in compiler_output (compiled=false, nothing replaced).
+    - OpenGL / GLES: starting point is the GLSL (get_shader_source shows it). `edits`: [{"find": ..., "replace":
+      ...}] applied in order, every occurrence replaced, a find that is absent is an error; or the whole new text as
+      `source`. E.g. insert "discard;" or `SV_Target0 = vec4(1,0,1,1); return;` at the top of main() to see what a
+      shader draws, or hard-code a branch.
+    - Vulkan: shaders are SPIR-V only, no text. Give a modified binary as `source_path` (.spv, or base64 text) or
+      `source` (base64); export the original with get_shader_source(output_path=...). A truncated / non-SPIR-V
+      blob is refused before it reaches the device (the device would accept it and break the replay until the
+      capture is reopened). Vulkan GLSL works with encoding="glsl" if it matches the shader's interface.
 
     Args:
-        event_id: a draw / dispatch that uses the shader (the shader is looked up from the pipeline there)
+        event_id: a draw / dispatch that uses the shader
         stage: which stage's shader to replace
-        edits: find / replace pairs on the original GLSL text (not together with source)
-        source: the whole replacement shader: GLSL text, or base64 SPIR-V (encoding "spirv" / auto on Vulkan)
-        source_path: file with the replacement (GLSL text, or SPIR-V as raw binary or base64); not with source
-        entry: entry point name (default: the shader's own, "main" in GLSL)
-        dry_run: only apply the edits and show the diff, do not compile or replace
+        edits / source / source_path: the change (not combined); none = rebuild unchanged
+        entry: entry point name (default: the shader's own)
+        dry_run: apply the edits and show the diff only, do not compile or replace
+    Returns compiled / replaced, compiler_output, a diff (GLSL), hashes and the active replacements.
+    
     """
     params: dict[str, object] = {"event_id": event_id, "stage": stage, "encoding": encoding, "dry_run": dry_run}
     if edits:
@@ -1651,34 +1623,24 @@ def debug_shader(
     only_changes_of: list[str] | None = None,
 ) -> dict:
     """
-    Step through ONE shader invocation with the event's real inputs, constants and textures, and see every value it
-    computed - the way to find out WHY a pixel has the wrong colour (a NaN, a branch not taken, a texture sample
-    that returned zero, a constant that is not what the material says).
+    Step through ONE shader invocation with the event's real inputs, constants and textures and see every value it
+    computed: the way to find WHY a pixel has the wrong colour (a NaN, a branch not taken, a texture sample that
+    returned 0, a wrong constant). Vulkan and D3D only, also on a phone; NOT on OpenGL / GLES (use replace_shader to
+    write a value out as the colour, then read the pixel). It runs the currently active replace_shader replacement.
 
-    Works on Vulkan and D3D captures, including on a phone (RenderDoc emulates the invocation); NOT on OpenGL / GLES
-    (use replace_shader to write a value out as the colour, then read the pixel / diff_textures).
+    Pick the invocation: kind="pixel": x, y (top-left origin; confirm with pixel_history that the draw wrote it),
+    primitive / sample to choose among fragments; kind="vertex": vertex (id in the draw), instance, index (defaults
+    to vertex); kind="compute": group and thread, each [x, y, z].
 
-    Pick the invocation:
-      - kind="pixel": x, y (render target pixel, top-left origin) - use pixel_history first to confirm that the
-        draw wrote that pixel; primitive / sample choose among several fragments.
-      - kind="vertex": vertex (vertex id within the draw), instance, index (index-buffer value; defaults to vertex).
-      - kind="compute": group and thread, each [x, y, z].
-
-    Result: total_steps; first_nan_or_inf (the first step that produced a NaN / Inf: its variable and value - the
-    first thing to look at for black / white / flickering pixels); the shader's inputs for this invocation; hot_lines
-    (steps per source line, only when the shader has debug info); final_values (the last value written to each
-    variable - the colour that was output is in the last writes); steps (first max_steps, each with only the
-    variables that step changed). Values are numbers, "nan" / "inf" / "-inf", or "uninit" for a component not
-    written yet.
-
-    Names: a shader without debug info only has SPIR-V ids (_582, _651 ...). They are the ids in
-    get_shader_info(event_id, stage).disassembly, which is the legend for the trace: find the id there to see which
-    instruction wrote it (and `Output float4* _582 : Location(0)` is the colour output). Use only_changes_of=["_651"]
-    to follow selected variables (substring match on the name) through all steps.
-
-    Args:
-        max_steps: how many steps to return in full (the summary always covers all of them)
-    Capped at 20000 steps; run_complete says whether the invocation finished.
+    Result: total_steps; first_nan_or_inf (first step that produced a NaN / Inf: variable and value);
+    nan_at_end (variables still NaN / Inf at the end: a NaN that a later max / clamp absorbed is in the first but not
+    in this one); the invocation's inputs; final_values (last write per variable: the output colour is in the last
+    writes); steps (first max_steps, only the variables each step changed); hot_lines (only with debug info). Values
+    are numbers, "nan" / "inf" / "-inf", or "uninit" (not written yet).
+    Without debug info variables are SPIR-V ids (_582 ...): get_shader_info(event_id, stage).disassembly is the legend
+    (`Output float4* _582 : Location(0)` is the colour output). only_changes_of=["_651"] follows selected variables
+    (substring match) through all steps. At most 20000 steps; run_complete says whether it finished.
+    
     """
     params: dict[str, object] = {"event_id": event_id, "kind": kind, "instance": instance, "sample": sample,
                                  "max_steps": max_steps}
@@ -1698,27 +1660,20 @@ def _flatten_actions(actions):
 @mcp.tool
 def analyze_vulkan_sync(max_barriers: LInt = 100) -> dict:
     """
-    Vulkan barriers and image layout transitions of the frame, decoded, with the problems that can be stated safely.
-
-    Reads every vkCmdPipelineBarrier (stage masks, access masks, buffer / image barriers, old -> new layout with the
-    image's name) and reports:
-    - broad_stage_mask (medium): ALL_COMMANDS / ALL_GRAPHICS in a stage mask. The barrier waits for or blocks every
-      stage, serialising vertex and fragment work that could overlap; most costly on tile-based mobile GPUs.
-    - discards_written_content (medium): a transition from UNDEFINED on an image that was WRITTEN earlier in the frame
-      (checked against the image's usage, with the write events and the later reads). UNDEFINED throws the contents
-      away: the classic cause of a black / garbage texture that is correct in the first frame after creation.
-    - mergeable_barriers (low): barriers directly after another one of the same command buffer with no draw / dispatch /
-      copy / clear / pass boundary between them; they can be one call with all the barriers.
-    - layout_thrash (low): an image that changes layout 4 or more times in the frame.
+    Vulkan barriers and image layout transitions of the frame, decoded (stage / access masks, buffer / image
+    barriers, old -> new layout with the image's name, the neighbouring draw / dispatch events), plus the problems
+    that can be stated safely:
+    - broad_stage_mask (medium): ALL_COMMANDS / ALL_GRAPHICS; serialises work that could overlap, worst on tile GPUs.
+    - discards_written_content (medium): a transition from UNDEFINED on an image written earlier in the frame
+      (checked against its usage): the contents are discarded, the classic black / garbage texture.
+    - mergeable_barriers (low): back-to-back barriers of one command buffer with no work between them.
+    - layout_thrash (low): an image changing layout 4+ times in the frame.
     - queue_ownership_transfer (info).
-    Also returns the decoded barrier list (capped by max_barriers; each with the neighbouring draw / dispatch events so
-    you can find it in the frame), a count of layout transitions and of stage-mask pairs.
-
-    Limits (stated in the result's `scope`): only vkCmdPipelineBarrier is decoded - vkCmdPipelineBarrier2 and the event
-    calls (vkCmdSetEvent / WaitEvents) are counted in `not_analysed`; layouts are NOT simulated through render passes
-    (their initial / final layouts change layouts implicitly), so a wrong oldLayout is not detected here, and whether a
-    stage / access combination is legal is not checked: the validation layer does that, see get_debug_messages.
-    Vulkan captures only.
+    Limits (also in the result's `scope`): only legacy vkCmdPipelineBarrier is decoded (Barrier2, SetEvent /
+    WaitEvents are only counted in `not_analysed`); layouts are NOT simulated through render passes, so a wrong
+    oldLayout is not found here; whether a mask combination is legal is the validation layer's job
+    (get_debug_messages). Vulkan captures only. max_barriers caps the barrier list, not the totals.
+    
     """
     status = bridge.call("get_capture_status")
     if status.get("api") != "Vulkan":
