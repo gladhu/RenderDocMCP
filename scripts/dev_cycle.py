@@ -73,13 +73,13 @@ def restart():
     print("RenderDoc restarted, extension installed, bridge up (%.0fs)" % (time.time() - t), flush=True)
 
 
-def open_capture(name, local=False):
+def open_capture(name, local=False, timeout=600):
     path = CAPTURES.get(name, name)
     if not os.path.isfile(path):
         raise SystemExit("capture not found: %s" % path)
     bridge = RenderDocBridge()
     t = time.time()
-    r = bridge.call("open_capture", {"capture_path": path, "use_remote": not local}, timeout=600)
+    r = bridge.call("open_capture", {"capture_path": path, "use_remote": not local}, timeout=timeout)
     status = bridge.call("get_capture_status")
     ctx = bridge.call("get_replay_context")
     print("opened %s api=%s remote=%s device=%s (%.0fs)" % (
@@ -87,12 +87,59 @@ def open_capture(name, local=False):
         time.time() - t), flush=True)
 
 
+def on_phone(ctx):
+    return bool(ctx.get("remote_connected") and not ctx.get("is_localhost") and ctx.get("capture_loaded")
+                and not ctx.get("capture_local", True))
+
+
+def responsive(bridge, timeout=8):
+    try:
+        bridge.call("ping", timeout=timeout)
+        return True
+    except RenderDocBridgeError:
+        return False
+
+
+def ensure(name, local=False):
+    """
+    Make sure RenderDoc answers and replays `name` on the phone, with the least work: nothing if it already does,
+    open_capture if the phone connection or the capture is gone, a restart if RenderDoc does not answer at all.
+    The phone-side server stops now and then; the next open then fails and RenderDoc sits in a modal
+    "Error opening capture" dialog on its UI thread, after which only a restart helps (see TODO.md).
+    """
+    bridge = RenderDocBridge()
+    path = CAPTURES.get(name, name)
+    if not responsive(bridge):
+        print("RenderDoc does not answer: restarting", flush=True)
+        restart()
+    else:
+        try:
+            ctx = bridge.call("get_replay_context", timeout=30)
+            status = bridge.call("get_capture_status", timeout=30)
+            if local or (on_phone(ctx) and os.path.normcase(status.get("filename") or "") == os.path.normcase(path)):
+                return
+        except RenderDocBridgeError:
+            pass
+    for attempt in (1, 2):
+        try:
+            open_capture(name, local, timeout=240)
+            return
+        except RenderDocBridgeError as e:
+            print("opening %s failed (%s)" % (name, str(e)[:80]), flush=True)
+            if attempt == 2:
+                raise SystemExit("could not open %s on the phone after a restart" % name)
+            restart()
+
+
 def main(argv):
     args = [a for a in argv if not a.startswith("--")]
     local = "--local" in argv
-    if not args or args[0] not in ("restart", "open", "all"):
+    if not args or args[0] not in ("restart", "open", "all", "ensure"):
         raise SystemExit(__doc__)
     cmd = args[0]
+    if cmd == "ensure":
+        ensure(args[1] if len(args) > 1 else "vulkan", local)
+        return
     if cmd in ("restart", "all"):
         restart()
     if cmd in ("open", "all"):

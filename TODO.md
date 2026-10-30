@@ -86,7 +86,9 @@ Each item says what is known, what is not, and how to tell it is done.
   with `adb shell appops set --uid org.renderdoc.renderdoccmd.arm64 MANAGE_EXTERNAL_STORAGE allow`. The custom 1.43
   build and 1.46 share the package name and replace each other. A stale "Remote side of network connection is
   busy" needs `am force-stop` first.
-- [ ] **Seen once: phone server drops the connection on the next `open_capture` after long replay work.** After
+- [ ] **Seen twice: phone server drops the connection and the next `open_capture` leaves RenderDoc in a modal "Error opening capture" dialog.**
+  The second time (2026-10-30) it happened while the machine was idle for a few minutes after short replay work (`ps` on the phone showed no renderdoc server any more; adb and RenderDoc were fine), so it is not only "after long replay work". `scripts/dev_cycle.py ensure <capture>` detects an unresponsive RenderDoc and restarts it. The original entry follows.
+- [ ] **(original entry) phone server drops the connection on the next `open_capture` after long replay work.** After
   ~10 min of back-to-back full-frame replays (1.46, GLES capture), opening the Vulkan capture failed with
   "Error opening capture" / "Socket unexpectedly disconnected". RenderDoc then shows a modal error on the UI thread and
   the extension stops answering until qrenderdoc is restarted. A plain capture switch (GLES -> Vulkan -> GLES) does

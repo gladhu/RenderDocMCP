@@ -1635,6 +1635,61 @@ def revert_shader(shader_id: str | None = None) -> dict:
 
 
 @mcp.tool
+def debug_shader(
+    event_id: ReqInt,
+    kind: Literal["pixel", "vertex", "compute"] = "pixel",
+    x: OptInt = None,
+    y: OptInt = None,
+    vertex: OptInt = None,
+    instance: LInt = 0,
+    index: OptInt = None,
+    group: list[int] | None = None,
+    thread: list[int] | None = None,
+    primitive: OptInt = None,
+    sample: LInt = 0,
+    max_steps: LInt = 60,
+    only_changes_of: list[str] | None = None,
+) -> dict:
+    """
+    Step through ONE shader invocation with the event's real inputs, constants and textures, and see every value it
+    computed - the way to find out WHY a pixel has the wrong colour (a NaN, a branch not taken, a texture sample
+    that returned zero, a constant that is not what the material says).
+
+    Works on Vulkan and D3D captures, including on a phone (RenderDoc emulates the invocation); NOT on OpenGL / GLES
+    (use replace_shader to write a value out as the colour, then read the pixel / diff_textures).
+
+    Pick the invocation:
+      - kind="pixel": x, y (render target pixel, top-left origin) - use pixel_history first to confirm that the
+        draw wrote that pixel; primitive / sample choose among several fragments.
+      - kind="vertex": vertex (vertex id within the draw), instance, index (index-buffer value; defaults to vertex).
+      - kind="compute": group and thread, each [x, y, z].
+
+    Result: total_steps; first_nan_or_inf (the first step that produced a NaN / Inf: its variable and value - the
+    first thing to look at for black / white / flickering pixels); the shader's inputs for this invocation; hot_lines
+    (steps per source line, only when the shader has debug info); final_values (the last value written to each
+    variable - the colour that was output is in the last writes); steps (first max_steps, each with only the
+    variables that step changed). Values are numbers, "nan" / "inf" / "-inf", or "uninit" for a component not
+    written yet.
+
+    Names: a shader without debug info only has SPIR-V ids (_582, _651 ...). They are the ids in
+    get_shader_info(event_id, stage).disassembly, which is the legend for the trace: find the id there to see which
+    instruction wrote it (and `Output float4* _582 : Location(0)` is the colour output). Use only_changes_of=["_651"]
+    to follow selected variables (substring match on the name) through all steps.
+
+    Args:
+        max_steps: how many steps to return in full (the summary always covers all of them)
+    Capped at 20000 steps; run_complete says whether the invocation finished.
+    """
+    params: dict[str, object] = {"event_id": event_id, "kind": kind, "instance": instance, "sample": sample,
+                                 "max_steps": max_steps}
+    for key, value in (("x", x), ("y", y), ("vertex", vertex), ("index", index), ("group", group),
+                       ("thread", thread), ("primitive", primitive), ("only_changes_of", only_changes_of)):
+        if value is not None:
+            params[key] = value
+    return bridge.call("debug_shader", params, timeout=_LONG_TIMEOUT)
+
+
+@mcp.tool
 def get_api_calls(
     event_id: OptInt = None,
     start_event: OptInt = None,

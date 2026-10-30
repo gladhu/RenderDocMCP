@@ -20,6 +20,7 @@ from .services import (
     OverlayService,
     CounterService,
     ReplaceService,
+    DebugShaderService,
 )
 
 
@@ -63,6 +64,7 @@ class RenderDocFacade:
         self._overlay = OverlayService(ctx, self._invoke)
         self._counters = CounterService(ctx, self._invoke)
         self._replace = ReplaceService(ctx, self._invoke)
+        self._debug_shader = DebugShaderService(ctx, self._invoke)
 
     def _invoke(self, callback):
         """Invoke callback on replay thread via BlockInvoke; what the callback raises is raised here"""
@@ -301,3 +303,7 @@ class RenderDocFacade:
     def revert_shader(self, shader_id=None):
         """Remove shader replacements"""
         return self._replace.revert_shader(shader_id)
+
+    def debug_shader(self, **kwargs):
+        """Step through one pixel / vertex / compute invocation of the shader at an event"""
+        return self._debug_shader.debug_shader(**kwargs)

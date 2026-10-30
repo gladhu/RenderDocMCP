@@ -383,23 +383,126 @@ async def t_replace_shader(client, mode):
     check("revert: the depth coverage is back too", cov2 == want, "%d vs %d" % (cov2, want))
 
 
+async def t_debug_shader(client, mode):
+    if mode == "gles":
+        try:
+            await call(client, "debug_shader", event_id=await pick_draw(client), kind="pixel", x=1, y=1)
+            check("debug: GLES is refused with an explanation", False, "no error raised")
+        except RuntimeError as e:
+            check("debug: GLES is refused with an explanation", "not supported on OpenGL" in str(e) and "replace_shader" in str(e), str(e)[-110:])
+        return
+
+    eid = await pick_draw(client)
+    wf = await call(client, "diff_textures", resource_id_a=(await call(client, "pick_pixel", x=0, y=0, event_id=eid))["resource_id"],
+                    event_id_a=eid - 1, event_id_b=eid, grid=4)
+    bb = wf["bounding_box"]
+    # a pixel this draw really shaded (the history says the draw's fragment passed there)
+    pixel = None
+    for fy in (0.5, 0.35, 0.65, 0.2, 0.8):
+        for fx in (0.5, 0.35, 0.65, 0.2, 0.8):
+            px, py = int(bb["x0"] + fx * (bb["x1"] - bb["x0"])), int(bb["y0"] + fy * (bb["y1"] - bb["y0"]))
+            h = await call(client, "pixel_history", x=px, y=py, event_id=eid, max_entries=50)
+            if any(m["event_id"] == eid and m["passed"] for m in h["modifications"]):
+                pixel = (px, py)
+                break
+        if pixel:
+            break
+    check("debug: found a pixel the draw shaded", pixel is not None, str(pixel))
+    px, py = pixel
+    frame = (await call(client, "pick_pixel", x=px, y=py, event_id=eid))["float"]
+
+    t = await call(client, "debug_shader", event_id=eid, kind="pixel", x=px, y=py, max_steps=5)
+    check("debug: pixel trace ran to the end on the phone", t["run_complete"] and t["total_steps"] > 50 and t["stage"] == "pixel",
+          "%d steps" % t["total_steps"])
+    check("debug: no uninitialised-fill noise in the steps", all(c["value"] != -107374176.0 for s in t["steps"] for c in s["changes"]) and
+          t["steps"][0].get("uninitialised_declared", 0) > 0, "step 0 declared %s" % t["steps"][0].get("uninitialised_declared"))
+    check("debug: summary has inputs and a bounded step list", len(t["inputs"]) > 0 and len(t["steps"]) == 5 and t["steps_truncated"])
+    # the emulated shader must have produced the colour the GPU wrote: some variable ends up as the frame's pixel
+    match = [f for f in t["final_values"] if isinstance(f["value"], list) and len(f["value"]) >= 3
+             and all(isinstance(v, float) and abs(v - frame[i]) <= 0.01 for i, v in enumerate(f["value"][:3]))]
+    check("debug: the trace's final colour equals the frame's pixel", bool(match),
+          "frame %s, trace %s" % ([round(v, 4) for v in frame[:3]], match[-1]["value"][:3] if match else "no variable matched"))
+    if match:
+        name = match[-1]["name"]
+        f = await call(client, "debug_shader", event_id=eid, kind="pixel", x=px, y=py, only_changes_of=[name], max_steps=100)
+        check("debug: only_changes_of follows one variable", 0 < f["total_steps"] < 20 and f["executed_steps"] == t["total_steps"] and
+              all(all(name in c["name"] for c in s["changes"]) for s in f["steps"]), "%s: %d writes of %d steps" % (name, f["total_steps"], f["executed_steps"]))
+
+    # a NaN planted in the shader must be found at the instruction that produced it (the debugger runs the replaced shader)
+    spv_file = os.path.join(os.environ.get("TEMP", "."), "renderdoc_mcp", "e2e_dbg_original.b64")
+    await call(client, "get_shader_source", event_id=eid, stage="pixel", output_path=spv_file)
+    import base64
+    import struct
+    with open(spv_file, encoding="utf-8") as fh:
+        spv = bytearray(base64.b64decode(fh.read()))
+    words = struct.unpack("<%dI" % (len(spv) // 4), bytes(spv))
+    i, f32, consts = 5, set(), []
+    while i < len(words):
+        op, n = words[i] & 0xFFFF, words[i] >> 16
+        if op == 22 and words[i + 2] == 32:
+            f32.add(words[i + 1])
+        if op == 43 and words[i + 1] in f32 and struct.unpack("<f", struct.pack("<I", words[i + 3]))[0] not in (0.0, 1.0):
+            consts.append(i + 3)
+        i += n
+    planted = None
+    for idx in consts[:8]:
+        mod = bytearray(spv)
+        struct.pack_into("<I", mod, idx * 4, 0x7FC00000)
+        nan_file = os.path.join(os.environ.get("TEMP", "."), "renderdoc_mcp", "e2e_dbg_nan.spv")
+        with open(nan_file, "wb") as fh:
+            fh.write(bytes(mod))
+        await call(client, "replace_shader", event_id=eid, source_path=nan_file)
+        tn = await call(client, "debug_shader", event_id=eid, kind="pixel", x=px, y=py, max_steps=0)
+        if tn["first_nan_or_inf"] is not None:
+            planted = tn
+            break
+    check("debug: a planted NaN is found, with its step and variable", planted is not None and planted["first_nan_or_inf"]["variable"],
+          str(planted["first_nan_or_inf"]) if planted else "none of %d constants produced a NaN" % len(consts[:8]))
+    if planted:
+        check("debug: nan_at_end says whether the NaN reached the end (list of variables)", isinstance(planted["nan_at_end"], list))
+    await call(client, "revert_shader")
+    clean = await call(client, "debug_shader", event_id=eid, kind="pixel", x=px, y=py, max_steps=0)
+    check("debug: after revert the trace is clean again", clean["first_nan_or_inf"] is None and clean["total_steps"] == t["total_steps"])
+
+    v = await call(client, "debug_shader", event_id=eid, kind="vertex", vertex=0, max_steps=3)
+    check("debug: vertex trace runs", v["stage"] == "vertex" and v["run_complete"] and v["total_steps"] > 10 and len(v["inputs"]) > 0,
+          "%d steps" % v["total_steps"])
+    check("debug: no NaN in a healthy shader", t["first_nan_or_inf"] is None and v["first_nan_or_inf"] is None)
+
+    for name, args in (("pixel nobody shaded", dict(event_id=eid, kind="pixel", x=1, y=1)),
+                       ("pixel without x", dict(event_id=eid, kind="pixel", y=1)),
+                       ("vertex without id", dict(event_id=eid, kind="vertex"))):
+        try:
+            await call(client, "debug_shader", **args)
+            check("debug error: " + name, False, "no error raised")
+        except RuntimeError as e:
+            check("debug error: " + name, True, str(e)[-80:])
+    ok = await call(client, "debug_shader", event_id=eid, kind="pixel", x=px, y=py, max_steps=1)
+    check("debug: replay still healthy after errors", ok["total_steps"] == t["total_steps"])
+
+
 TESTS = {
     "get_debug_messages": t_get_debug_messages,
     "event_targets": t_event_targets,
     "diff_textures": t_diff_textures,
     "replace_shader": t_replace_shader,
+    "debug_shader": t_debug_shader,
     "render_overlay": t_render_overlay,
     "get_gpu_counters": t_get_gpu_counters,
 }
 
 
+def on_phone(ctx):
+    return bool(ctx.get("remote_connected") and not ctx.get("is_localhost") and ctx.get("capture_loaded")
+                and not ctx.get("capture_local", True))
+
+
 async def main(mode, only):
     async with Client(mcp) as client:
         ctx = await call(client, "get_replay_context")
-        if not (ctx.get("remote_connected") and not ctx.get("is_localhost") and ctx.get("capture_loaded")
-                and not ctx.get("capture_local", True)):
+        if not on_phone(ctx):
             print("not replaying on a phone: %s" % ctx)
-            print("run: scripts/dev_cycle.py all %s" % mode)
+            print("run: scripts/dev_cycle.py ensure %s" % mode)
             return 2
         status = await call(client, "get_capture_status")
         print("device: %s (%s)  capture: %s  api: %s" % (

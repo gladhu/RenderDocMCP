@@ -15,12 +15,14 @@ from .debug_service import DebugService
 from .overlay_service import OverlayService
 from .counter_service import CounterService
 from .replace_service import ReplaceService
+from .debug_shader_service import DebugShaderService
 
 __all__ = [
     "DebugService",
     "OverlayService",
     "CounterService",
     "ReplaceService",
+    "DebugShaderService",
     "CaptureManager",
     "ActionService",
     "SearchService",

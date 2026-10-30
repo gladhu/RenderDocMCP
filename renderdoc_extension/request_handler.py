@@ -61,6 +61,7 @@ class RequestHandler:
             "render_overlay": self._handle_render_overlay,
             "get_gpu_counters": self._handle_get_gpu_counters,
             "replace_shader": self._handle_replace_shader,
+            "debug_shader": self._handle_debug_shader,
             "revert_shader": self._handle_revert_shader,
         }
 
@@ -545,3 +546,23 @@ class RequestHandler:
     def _handle_revert_shader(self, params):
         """Handle revert_shader request"""
         return self.facade.revert_shader(params.get("shader_id"))
+
+    def _handle_debug_shader(self, params):
+        """Handle debug_shader request"""
+        event_id = params.get("event_id")
+        if event_id is None:
+            raise ValueError("event_id is required")
+        def opt_int(key):
+            value = params.get(key)
+            return None if value is None else int(value)
+        return self.facade.debug_shader(
+            event_id=int(event_id),
+            kind=params.get("kind", "pixel"),
+            x=opt_int("x"), y=opt_int("y"),
+            vertex=opt_int("vertex"), instance=int(params.get("instance", 0)), index=opt_int("index"),
+            group=params.get("group"), thread=params.get("thread"),
+            primitive=opt_int("primitive"), sample=int(params.get("sample", 0)),
+            max_steps=int(params.get("max_steps", 60)),
+            only_changes_of=params.get("only_changes_of"),
+            max_total_steps=int(params.get("max_total_steps", 20000)),
+        )
