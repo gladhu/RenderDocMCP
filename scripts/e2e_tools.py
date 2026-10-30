@@ -481,12 +481,58 @@ async def t_debug_shader(client, mode):
     check("debug: replay still healthy after errors", ok["total_steps"] == t["total_steps"])
 
 
+async def t_analyze_vulkan_sync(client, mode):
+    if mode == "gles":
+        try:
+            await call(client, "analyze_vulkan_sync")
+            check("sync: a GLES capture is refused", False, "no error raised")
+        except RuntimeError as e:
+            check("sync: a GLES capture is refused", "needs a Vulkan capture" in str(e), str(e)[-60:])
+        return
+
+    r = await call(client, "analyze_vulkan_sync", max_barriers=1000)
+    raw = await call(client, "get_api_calls", start_event=1, end_event=10_000_000, name_filter="vkCmdPipelineBarrier", include_params=True, max_calls=1000)
+    legacy = [c for c in raw["api_calls"] if c["name"] == "vkCmdPipelineBarrier"]
+    check("sync: barrier count equals the raw call count", r["barrier_count"] == len(legacy) > 0, "%d barriers" % r["barrier_count"])
+
+    def count(call_, key):
+        return sum(len(p["value"]) for p in call_["params"] if p["name"] == key)
+    check("sync: image / buffer barrier totals equal the raw arrays",
+          r["image_barriers"] == sum(count(c, "pImageMemoryBarriers") for c in legacy) and
+          r["buffer_barriers"] == sum(count(c, "pBufferMemoryBarriers") for c in legacy),
+          "%d image, %d buffer" % (r["image_barriers"], r["buffer_barriers"]))
+    check("sync: layout transitions add up to the image barriers", sum(r["layout_transitions"].values()) == r["image_barriers"])
+    check("sync: every listed barrier is decoded with stage names and neighbouring work",
+          len(r["barriers"]) == r["barrier_count"] and all(b["src_stages"] is not None and b["dst_stages"] for b in r["barriers"]) and
+          all(b["next_work_event"] is None or b["next_work_event"] > b["event_id"] for b in r["barriers"]))
+    acts = await call(client, "get_draw_calls", only_actions=True, flags_filter=["Present"])
+    if acts.get("actions"):
+        check("sync: a frame that is presented ends in a PRESENT_SRC_KHR transition", any(k.endswith("-> PRESENT_SRC_KHR") for k in r["layout_transitions"]),
+              str([k for k in r["layout_transitions"] if "PRESENT" in k]))
+    named = [i for b in r["barriers"] for i in b["image_barriers"] if i["name"]]
+    check("sync: image barriers carry the image's name", len(named) > 0, named[0]["name"] if named else "")
+
+    # each mergeable group must really have no draw / dispatch / copy / clear / pass call between its barriers
+    work_names = ("vkCmdDraw", "vkCmdDispatch", "vkCmdCopy", "vkCmdBlit", "vkCmdClear", "vkCmdResolve", "vkCmdBeginRenderPass",
+                  "vkCmdEndRenderPass", "vkCmdBeginRendering", "vkCmdEndRendering", "vkCmdFillBuffer", "vkCmdUpdateBuffer", "vkCmdExecuteCommands")
+    groups = [g for i in r["issues"] if i["type"] == "mergeable_barriers" for g in i["groups"]]
+    for g in groups:
+        between = await call(client, "get_api_calls", start_event=g[0], end_event=g[-1], include_params=False, max_calls=1000)
+        offenders = [c["name"] for c in between["api_calls"] if c["name"].startswith(work_names)]
+        check("sync: mergeable group %s has no work between its barriers" % g, offenders == [], str(offenders[:3]))
+    check("sync: not-analysed calls are reported, not silently dropped", isinstance(r["not_analysed"], dict))
+    check("sync: the scope limits are stated in the result", "legacy vkCmdPipelineBarrier" in r["scope"])
+    small = await call(client, "analyze_vulkan_sync", max_barriers=2)
+    check("sync: max_barriers caps the list but not the totals", len(small["barriers"]) == 2 and small["barrier_count"] == r["barrier_count"] and small["barriers_truncated"])
+
+
 TESTS = {
     "get_debug_messages": t_get_debug_messages,
     "event_targets": t_event_targets,
     "diff_textures": t_diff_textures,
     "replace_shader": t_replace_shader,
     "debug_shader": t_debug_shader,
+    "analyze_vulkan_sync": t_analyze_vulkan_sync,
     "render_overlay": t_render_overlay,
     "get_gpu_counters": t_get_gpu_counters,
 }

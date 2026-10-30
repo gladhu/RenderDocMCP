@@ -13,7 +13,7 @@ from fastmcp import FastMCP
 
 from .bridge.client import RenderDocBridge, RenderDocBridgeError
 from .config import settings
-from . import compare, draw_analysis, imagediff, report, result_cache, texture_analysis
+from . import compare, draw_analysis, imagediff, report, result_cache, texture_analysis, vk_sync
 from .params import (
     LInt, OptInt, OptIntList, ReqInt, StageOpt, StageReq, StageVP, StageVPCOpt,
 )
@@ -1687,6 +1687,70 @@ def debug_shader(
         if value is not None:
             params[key] = value
     return bridge.call("debug_shader", params, timeout=_LONG_TIMEOUT)
+
+
+def _flatten_actions(actions):
+    for a in actions:
+        yield a
+        yield from _flatten_actions(a.get("children") or [])
+
+
+@mcp.tool
+def analyze_vulkan_sync(max_barriers: LInt = 100) -> dict:
+    """
+    Vulkan barriers and image layout transitions of the frame, decoded, with the problems that can be stated safely.
+
+    Reads every vkCmdPipelineBarrier (stage masks, access masks, buffer / image barriers, old -> new layout with the
+    image's name) and reports:
+    - broad_stage_mask (medium): ALL_COMMANDS / ALL_GRAPHICS in a stage mask. The barrier waits for or blocks every
+      stage, serialising vertex and fragment work that could overlap; most costly on tile-based mobile GPUs.
+    - discards_written_content (medium): a transition from UNDEFINED on an image that was WRITTEN earlier in the frame
+      (checked against the image's usage, with the write events and the later reads). UNDEFINED throws the contents
+      away: the classic cause of a black / garbage texture that is correct in the first frame after creation.
+    - mergeable_barriers (low): barriers directly after another one of the same command buffer with no draw / dispatch /
+      copy / clear / pass boundary between them; they can be one call with all the barriers.
+    - layout_thrash (low): an image that changes layout 4 or more times in the frame.
+    - queue_ownership_transfer (info).
+    Also returns the decoded barrier list (capped by max_barriers; each with the neighbouring draw / dispatch events so
+    you can find it in the frame), a count of layout transitions and of stage-mask pairs.
+
+    Limits (stated in the result's `scope`): only vkCmdPipelineBarrier is decoded - vkCmdPipelineBarrier2 and the event
+    calls (vkCmdSetEvent / WaitEvents) are counted in `not_analysed`; layouts are NOT simulated through render passes
+    (their initial / final layouts change layouts implicitly), so a wrong oldLayout is not detected here, and whether a
+    stage / access combination is legal is not checked: the validation layer does that, see get_debug_messages.
+    Vulkan captures only.
+    """
+    status = bridge.call("get_capture_status")
+    if status.get("api") != "Vulkan":
+        raise ValueError(f"analyze_vulkan_sync needs a Vulkan capture (this one is {status.get('api')})")
+
+    def calls(name_filter: str, params: bool) -> list[dict]:
+        r = bridge.call("get_api_calls", {"start_event": 1, "end_event": 10_000_000, "name_filter": name_filter,
+                                          "include_params": params, "max_calls": 1000}, timeout=_LONG_TIMEOUT)
+        return r["api_calls"]
+
+    barrier_calls = [c for c in calls("Barrier", True)]
+    other = {}
+    for c in calls("Event", False) + [c for c in barrier_calls if c["name"] != "vkCmdPipelineBarrier"]:
+        other[c["name"]] = other.get(c["name"], 0) + 1
+    barrier_calls = [c for c in barrier_calls if c["name"] == "vkCmdPipelineBarrier"]
+
+    actions = bridge.call("get_draw_calls", {"only_actions": True}, timeout=_LONG_TIMEOUT).get("actions", [])
+    work = [a["event_id"] for a in _flatten_actions(actions)]
+
+    decoded = [vk_sync.decode_barrier(c) for c in barrier_calls]
+    images = sorted({i["image"] for b in decoded if b for i in b["image_barriers"]})
+    names: dict[str, str] = {}
+    if images:
+        for tex in bridge.call("list_frame_textures", {"top_n": 5000}, timeout=_LONG_TIMEOUT).get("textures", []):
+            names[tex["resource_id"]] = tex.get("name", "")
+    # usage only for images that a transition starts from UNDEFINED (the rule that needs it)
+    undefined = sorted({i["image"] for b in decoded if b for i in b["image_barriers"]
+                        if i["old_layout"] == vk_sync.UNDEFINED and i["new_layout"] != vk_sync.UNDEFINED})
+    usage = {}
+    for img in undefined:
+        usage[img] = bridge.call("get_resource_usage", {"resource_id": img}, timeout=_LONG_TIMEOUT).get("usages", [])
+    return vk_sync.analyze(barrier_calls, work, usage, names, other, int(max_barriers))
 
 
 @mcp.tool
