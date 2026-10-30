@@ -44,6 +44,9 @@ _METRICS = [
     ("overdraw", "late_z_wasted_cycles", "Late-Z wasted cycles", "lower"),
     ("overdraw", "transparent_pixels", "Transparent pixels", "lower"),
     ("texture_bandwidth", "footprint_mb", "Texture sampling footprint (MB)", "lower"),
+    ("sync", "barriers", "Vulkan barriers", "lower"),
+    ("sync", "mergeable", "Vulkan barriers that could be merged", "lower"),
+    ("sync", "medium_issues", "Vulkan sync issues (medium and up)", "lower"),
     ("risks", "high", "Risks: high", "lower"),
     ("risks", "medium", "Risks: medium", "lower"),
 ]
@@ -68,8 +71,9 @@ def _pass_signature(p):
 
 
 def build_snapshot(name, status, summary, pass_list, instancing, state, textures, risks, bandwidth, shading,
-                   geometry_cost=None, overdraw=None, texture_bandwidth=None):
-    """Condense the raw tool results of one capture. shading / geometry_cost / overdraw may be None."""
+                   geometry_cost=None, overdraw=None, texture_bandwidth=None, sync=None):
+    """Condense the raw tool results of one capture. shading / geometry_cost / overdraw / sync may be None
+    (sync: vk_sync.brief() of a Vulkan capture)."""
     stats = summary.get("statistics", {})
     counts = summary.get("resource_counts", {})
     overall = instancing.get("overall", {})
@@ -152,6 +156,7 @@ def build_snapshot(name, status, summary, pass_list, instancing, state, textures
         } for p in bandwidth.get("passes", [])],
     }
 
+    snap["sync"] = sync
     if shading is not None:
         snap["shading"] = {
             "compiler": shading.get("compiler"), "gpu": shading.get("gpu"),
@@ -405,7 +410,7 @@ def diff_snapshots(a, b):
     rows = []
     for section, key, label, direction in _METRICS:
         sa, sb = a.get(section) or {}, b.get(section) or {}
-        if section in ("shading", "geometry_cost", "overdraw", "texture_bandwidth") and (not a.get(section) or not b.get(section)):
+        if section in ("shading", "geometry_cost", "overdraw", "texture_bandwidth", "sync") and (not a.get(section) or not b.get(section)):
             continue
         if section in ("geometry_cost", "overdraw", "texture_bandwidth"):
             sa, sb = sa.get("totals", {}), sb.get("totals", {})

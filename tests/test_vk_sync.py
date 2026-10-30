@@ -98,6 +98,28 @@ class RealCapture(unittest.TestCase):
         self.assertEqual((len(r["barriers"]), r["barriers_truncated"], r["barrier_count"]), (3, True, 8))
 
 
+class Brief(unittest.TestCase):
+    def test_counts_for_the_real_capture(self):
+        b = vs.brief(vs.analyze(REAL, WORK, {}, {}))
+        self.assertEqual((b["barriers"], b["image_barriers"], b["buffer_barriers"]), (8, 7, 1))
+        self.assertEqual((b["layout_changes"], b["mergeable"], b["medium_issues"]), (4, 4, 0))
+        self.assertEqual(b["issues_by_type"], {"mergeable_barriers": 6})
+
+    def test_same_layout_barriers_are_not_layout_changes(self):
+        b = vs.brief(vs.analyze([pcall(1, 1, 1, images=[img("T", 3, 3)]), pcall(2, 1, 1, images=[img("T", 3, 3)])], []))
+        self.assertEqual(b["layout_changes"], 0)
+
+    def test_event_lists_are_capped(self):
+        calls = [pcall(10 + n, 1, 1) for n in range(30)]
+        b = vs.brief(vs.analyze(calls, []), max_events=5)
+        self.assertEqual(len(b["issues"][0]["event_ids"]), 5)
+        self.assertEqual(b["issues"][0]["count"], 30)
+
+    def test_medium_counts_issue_kinds_not_barriers(self):
+        b = vs.brief(vs.analyze([pcall(1, 0x10000, 1), pcall(2, 0x8000, 1)], []))
+        self.assertEqual(b["medium_issues"], 1)
+
+
 class Rules(unittest.TestCase):
     def test_all_commands_and_all_graphics_are_flagged(self):
         r = vs.analyze([pcall(1, 0x10000, 0x10000), pcall(2, 0x8000, 0x80), pcall(3, 0x80, 0x400)], [])

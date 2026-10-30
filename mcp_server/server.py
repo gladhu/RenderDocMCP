@@ -1657,27 +1657,8 @@ def _flatten_actions(actions):
         yield from _flatten_actions(a.get("children") or [])
 
 
-@mcp.tool
-def analyze_vulkan_sync(max_barriers: LInt = 100) -> dict:
-    """
-    Vulkan barriers and image layout transitions of the frame, decoded (stage / access masks, buffer / image
-    barriers, old -> new layout with the image's name, the neighbouring draw / dispatch events), plus the problems
-    that can be stated safely:
-    - broad_stage_mask (medium): ALL_COMMANDS / ALL_GRAPHICS; serialises work that could overlap, worst on tile GPUs.
-    - discards_written_content (medium): a transition from UNDEFINED on an image written earlier in the frame
-      (checked against its usage): the contents are discarded, the classic black / garbage texture.
-    - mergeable_barriers (low): back-to-back barriers of one command buffer with no work between them.
-    - layout_thrash (low): an image changing layout 4+ times in the frame.
-    - queue_ownership_transfer (info).
-    Limits (also in the result's `scope`): only legacy vkCmdPipelineBarrier is decoded (Barrier2, SetEvent /
-    WaitEvents are only counted in `not_analysed`); layouts are NOT simulated through render passes, so a wrong
-    oldLayout is not found here; whether a mask combination is legal is the validation layer's job
-    (get_debug_messages). Vulkan captures only. max_barriers caps the barrier list, not the totals.
-    
-    """
-    status = bridge.call("get_capture_status")
-    if status.get("api") != "Vulkan":
-        raise ValueError(f"analyze_vulkan_sync needs a Vulkan capture (this one is {status.get('api')})")
+def _vulkan_sync_result(max_barriers: int) -> dict:
+    """Barrier analysis of the loaded Vulkan capture (analyze_vulkan_sync, and the snapshot)"""
 
     def calls(name_filter: str, params: bool) -> list[dict]:
         r = bridge.call("get_api_calls", {"start_event": 1, "end_event": 10_000_000, "name_filter": name_filter,
@@ -1706,6 +1687,30 @@ def analyze_vulkan_sync(max_barriers: LInt = 100) -> dict:
     for img in undefined:
         usage[img] = bridge.call("get_resource_usage", {"resource_id": img}, timeout=_LONG_TIMEOUT).get("usages", [])
     return vk_sync.analyze(barrier_calls, work, usage, names, other, int(max_barriers))
+
+
+@mcp.tool
+def analyze_vulkan_sync(max_barriers: LInt = 100) -> dict:
+    """
+    Vulkan barriers and image layout transitions of the frame, decoded (stage / access masks, buffer / image
+    barriers, old -> new layout with the image's name, the neighbouring draw / dispatch events), plus the problems
+    that can be stated safely:
+    - broad_stage_mask (medium): ALL_COMMANDS / ALL_GRAPHICS; serialises work that could overlap, worst on tile GPUs.
+    - discards_written_content (medium): a transition from UNDEFINED on an image written earlier in the frame
+      (checked against its usage): the contents are discarded, the classic black / garbage texture.
+    - mergeable_barriers (low): back-to-back barriers of one command buffer with no work between them.
+    - layout_thrash (low): an image changing layout 4+ times in the frame.
+    - queue_ownership_transfer (info).
+    Limits (also in the result's `scope`): only legacy vkCmdPipelineBarrier is decoded (Barrier2, SetEvent /
+    WaitEvents are only counted in `not_analysed`); layouts are NOT simulated through render passes, so a wrong
+    oldLayout is not found here; whether a mask combination is legal is the validation layer's job
+    (get_debug_messages). Vulkan captures only. max_barriers caps the barrier list, not the totals.
+    
+    """
+    status = bridge.call("get_capture_status")
+    if status.get("api") != "Vulkan":
+        raise ValueError(f"analyze_vulkan_sync needs a Vulkan capture (this one is {status.get('api')})")
+    return _vulkan_sync_result(int(max_barriers))
 
 
 @mcp.tool
@@ -1841,8 +1846,13 @@ def _collect_snapshot(name: str, include_shading_cost: bool, compiler: str, gpu:
     textures = bridge.call("list_frame_textures", {"sort_by": "size", "top_n": 1}, timeout=_LONG_TIMEOUT)
     risks = bridge.call("diagnose_mobile_risks", {"severity_filter": "all"}, timeout=_LONG_TIMEOUT)
     bandwidth = bridge.call("analyze_pass_bandwidth", {"top_n": 1000, "sort_by": "index"}, timeout=_LONG_TIMEOUT)
-    shading = geometry = over = tex_bw = None
+    shading = geometry = over = tex_bw = sync = None
     warnings = []
+    if status.get("api") == "Vulkan":
+        try:
+            sync = vk_sync.brief(_vulkan_sync_result(0))
+        except Exception as e:      # an unreadable barrier must not lose the rest of the snapshot
+            warnings.append("barrier analysis skipped: %s" % e)
     _, default_gpu, _, _ = _compiler(compiler)
     gpu = gpu or default_gpu
     if include_shading_cost or include_draw_analysis:
@@ -1872,6 +1882,7 @@ def _collect_snapshot(name: str, include_shading_cost: bool, compiler: str, gpu:
             warnings.append("shading / draw analysis skipped: %s" % e)
     snap = compare.build_snapshot(
         name, status, summary, pass_list, instancing, state, textures, risks, bandwidth, shading, geometry, over, tex_bw,
+        sync=sync,
     )
     if warnings:
         snap["warnings"] = warnings

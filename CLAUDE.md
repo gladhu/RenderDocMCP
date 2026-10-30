@@ -96,7 +96,7 @@ RenderDocMCP/
 | `estimate_texture_bandwidth` | 贴图采样足迹（`mcp_server/texture_analysis.py`，数据来自 `get_draw_coverage(with_textures=True)` + `list_frame_textures`）；上限估算，每像素最多取一个 texel，不含缓存/各向异性 |
 | `estimate_geometry_cost` / `analyze_overdraw` | 顶点预算与过度绘制（`mcp_server/draw_analysis.py`，数据来自 `get_draw_coverage(with_state=True)` + malioc 顶点/像素周期）。覆盖像素/三角形数含背面剔除，阈值已补偿 |
 | `frame_performance_report` | 基于快照生成记分卡 + 排序后的优化项（`mcp_server/report.py`）。每类带宽问题保留最重的 3 条，其余合并成一条。百分比只在各自领域内可比，阈值是经验值 |
-| `snapshot_metrics` / `diff_snapshots` / `compare_captures` | 指标快照与前后对比。shader 用源码 hash 匹配，着色成本差拆成 shader_cost_delta 与 coverage_delta；compare 每取完一个快照立即保存 |
+| `snapshot_metrics` / `diff_snapshots` / `compare_captures` | 指标快照与前后对比。Vulkan 抓帧的快照还带 `sync` 段（`vk_sync.brief`：barrier 数、layout 变化数、可合并数、问题类型），对比里有三行 Vulkan barrier 指标（任一边没有该段就跳过，GLES 与 Vulkan 互比不会出错），`frame_performance_report` 多一个 `sync` 板块（记分卡一行 + 每类问题一条行动，没有字节/周期数字，建议用 `get_gpu_counters repeat=3` 前后测）。shader 用源码 hash 匹配，着色成本差拆成 shader_cost_delta 与 coverage_delta；compare 每取完一个快照立即保存 |
 | `stat_instancing_efficiency` | 整帧 instancing 统计（按 pass，无效 instance DC 数） |
 
 ### get_draw_calls 过滤参数

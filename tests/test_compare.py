@@ -37,12 +37,13 @@ def _snapshot(name, draws, load, store, wasted, cycles, with_reopen):
     )
 
 
-def _minimal_snapshot(name, shading=None, geometry=None, overdraw=None, texture_bandwidth=None, state=None):
+def _minimal_snapshot(name, shading=None, geometry=None, overdraw=None, texture_bandwidth=None, state=None, sync=None):
     return c.build_snapshot(
         name, {"filename": name, "api": "OpenGL"}, {"statistics": {"draw_calls": 2}, "resource_counts": {}},
         {"pass_count": 1}, {"overall": {}}, state or {"change_counts": {}, "batching_opportunities": []},
         {"total_textures": 1, "total_size_mb": 1}, {"risk_count": 0, "risks": [], "main_resolution": "1x1"},
-        {"pass_count": 0, "total": {}, "issues": [], "passes": []}, shading, geometry, overdraw, texture_bandwidth)
+        {"pass_count": 0, "total": {}, "issues": [], "passes": []}, shading, geometry, overdraw, texture_bandwidth,
+        sync=sync)
 
 
 class DiffSnapshotsTest(unittest.TestCase):
@@ -240,6 +241,73 @@ class TextureSectionTest(unittest.TestCase):
         self.assertTrue(any(x["area"] == "textures" and "uncompressed_texture" in x["title"] for x in rep["actions"]),
                         rep["actions"])
         self.assertTrue(any(s["area"] == "textures" for s in rep["scorecard"]))
+
+
+class SyncSectionTest(unittest.TestCase):
+    """Vulkan barrier analysis in snapshots, diffs and the report (barriers recorded from a Mali-G610 capture)"""
+
+    @staticmethod
+    def _sync(extra_calls=(), usage=None):
+        from tests.test_vk_sync import REAL, WORK
+        from mcp_server import vk_sync
+        return vk_sync.brief(vk_sync.analyze(list(REAL) + list(extra_calls), WORK, usage or {}, {}, {"vkCmdSetEvent": 1}))
+
+    def test_snapshot_keeps_the_brief_and_non_vulkan_has_none(self):
+        s = self._sync()
+        snap = _minimal_snapshot("a", sync=s)
+        self.assertEqual(snap["sync"]["barriers"], 8)
+        self.assertEqual((s["layout_changes"], s["mergeable"], s["medium_issues"]), (4, 4, 0))
+        self.assertEqual(s["not_analysed"], {"vkCmdSetEvent": 1})
+        self.assertIsNone(_minimal_snapshot("b")["sync"])
+
+    def test_brief_is_small_and_json_safe(self):
+        import json
+        s = self._sync()
+        self.assertNotIn("barriers_list", s)
+        json.dumps(s, allow_nan=False)
+        self.assertLessEqual(len(json.dumps(s)), 2000)
+
+    def test_diff_has_barrier_metrics_only_when_both_sides_have_the_section(self):
+        a = _minimal_snapshot("a", sync=self._sync())
+        merged = self._sync()
+        merged["barriers"] -= 4
+        merged["mergeable"] = 0
+        b = _minimal_snapshot("b", sync=merged)
+        rows = dict((m["metric"], m) for m in c.diff_snapshots(a, b)["metrics"])
+        self.assertEqual(rows["Vulkan barriers"]["verdict"], "better")
+        self.assertEqual(rows["Vulkan barriers that could be merged"]["after"], 0)
+        self.assertNotIn("Vulkan barriers", [m["metric"] for m in c.diff_snapshots(a, _minimal_snapshot("c"))["metrics"]])
+
+    def test_report_has_a_sync_row_and_actions_for_what_was_found(self):
+        usage = {"ResourceId::374": [{"event_id": 1, "usage": "ColorTarget", "kind": "write"}]}
+        from tests.test_vk_sync import pcall, img
+        discard = pcall(380, 1024, 1024, images=[img("ResourceId::374", 0, 2, 0, 256)])
+        rep = report.build_report(_minimal_snapshot("a", sync=self._sync([discard], usage)))
+        row = [s for s in rep["scorecard"] if s["area"] == "sync"][0]
+        self.assertEqual((row["assessment"], row["value"]), ("watch", "9 / 5"))
+        titles = [a["title"] for a in rep["actions"] if a["area"] == "sync"]
+        self.assertTrue(any(t.startswith("discards_written_content") for t in titles), titles)
+        self.assertTrue(any(t.startswith("mergeable_barriers") for t in titles), titles)
+        discard_action = [a for a in rep["actions"] if a["title"].startswith("discards_written_content")][0]
+        self.assertEqual((discard_action["priority"], discard_action["area"]), ("medium", "sync"))
+        self.assertIn("380", str(discard_action["where"]))
+        self.assertTrue(discard_action["how"])
+
+    def test_clean_capture_scores_ok_and_other_apis_have_no_row(self):
+        from tests.test_vk_sync import pcall
+        from mcp_server import vk_sync
+        clean = vk_sync.brief(vk_sync.analyze([pcall(1, 128, 1024)], [5]))
+        rep = report.build_report(_minimal_snapshot("a", sync=clean))
+        self.assertEqual([s["assessment"] for s in rep["scorecard"] if s["area"] == "sync"], ["ok"])
+        self.assertFalse(any(s["area"] == "sync" for s in report.build_report(_minimal_snapshot("b"))["scorecard"]))
+
+    def test_sync_actions_are_not_folded_into_bandwidth_ones(self):
+        """_fold_bandwidth groups by the "kind" key; sync actions must not carry one"""
+        rep = report.build_report(_minimal_snapshot("a", sync=self._sync()), top_actions=50)
+        sync_actions = [a for a in rep["actions"] if a["area"] == "sync"]
+        self.assertTrue(sync_actions)
+        self.assertTrue(all("kind" not in a for a in sync_actions))
+        self.assertEqual(rep["actions_folded"], 0)
 
 
 if __name__ == "__main__":

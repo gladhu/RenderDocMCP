@@ -195,6 +195,32 @@ def find_queue_transfers(barriers):
     return issue("queue_ownership_transfer", "info", hits, "Image barriers that transfer queue family ownership.") if hits else None
 
 
+# ---------------------------------------------------------------- snapshot form
+
+def brief(result, max_events=10):
+    """analyze() result -> the small summary stored in a metrics snapshot (no barrier list)"""
+    changes = 0
+    for key, n in result["layout_transitions"].items():
+        old, new = key.split(" -> ")
+        if old != new:
+            changes += n
+    by_type = dict((i["type"], i["count"]) for i in result["issues"])
+    mergeable = next((i.get("barriers_saved", 0) for i in result["issues"] if i["type"] == "mergeable_barriers"), 0)
+    return {
+        "barriers": result["barrier_count"],
+        "image_barriers": result["image_barriers"],
+        "buffer_barriers": result["buffer_barriers"],
+        "layout_changes": changes,
+        "mergeable": mergeable,
+        "medium_issues": sum(1 for i in result["issues"] if i["severity"] in ("high", "medium")),
+        "not_analysed": dict(result.get("not_analysed") or {}),
+        "issues_by_type": by_type,
+        "issues": [{"type": i["type"], "severity": i["severity"], "count": i["count"],
+                    "event_ids": i["event_ids"][:max_events], "description": i["description"]}
+                   for i in result["issues"]],
+    }
+
+
 # ---------------------------------------------------------------- analysis
 
 def analyze(calls, work_events, usage_by_image=None, names=None, other_sync=None, max_barriers=100):

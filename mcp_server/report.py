@@ -248,6 +248,44 @@ def _submission(snap, actions, scorecard):
         })
 
 
+_SYNC_HOW = {
+    "broad_stage_mask": "Replace ALL_COMMANDS / ALL_GRAPHICS with the stages that really produce and consume the data "
+                        "(analyze_vulkan_sync lists the barriers).",
+    "discards_written_content": "Use the image's real previous layout as oldLayout instead of UNDEFINED, or stop reading "
+                                "it later (analyze_vulkan_sync shows the writes before and the reads after).",
+    "mergeable_barriers": "Record back-to-back barriers as one vkCmdPipelineBarrier carrying all image / buffer barriers.",
+    "layout_thrash": "Group the uses of the image that need the same layout instead of flipping it repeatedly.",
+}
+
+
+def _sync(snap, actions, scorecard):
+    """Vulkan barriers / layout transitions; absent for other APIs"""
+    sync = snap.get("sync")
+    if not sync:
+        return
+    medium = sync.get("medium_issues", 0)
+    scorecard.append({
+        "area": "sync", "metric": "Vulkan barriers / layout changes",
+        "value": "%s / %s" % (sync.get("barriers", 0), sync.get("layout_changes", 0)),
+        "assessment": "watch" if medium else "ok",
+        "note": "%d barrier(s) could be merged; %d issue(s) of medium severity or higher (analyze_vulkan_sync)"
+                % (sync.get("mergeable", 0), medium),
+    })
+    for i in sync.get("issues", []):
+        if i["severity"] not in _PRIORITY_RANK:         # info (queue ownership transfers) is not an action
+            continue
+        # no "kind" key: _fold_bandwidth groups actions by it
+        actions.append({
+            "area": "sync", "priority": i["severity"],
+            "title": "%s: %d barrier(s)" % (i["type"], i["count"]),
+            "impact": "no byte or cycle figure: a synchronisation cost, measure before / after (get_gpu_counters repeat=3)",
+            "impact_pct": 0.0,
+            "where": {"event_ids": i.get("event_ids", [])},
+            "evidence": i.get("description", ""),
+            "how": _SYNC_HOW.get(i["type"], ""),
+        })
+
+
 def _risks(snap, actions, scorecard):
     risks = snap.get("risks") or {}
     scorecard.append({
@@ -311,6 +349,7 @@ def build_report(snap, top_actions=15):
     _draw_analysis(snap, actions, scorecard)
     _textures(snap, actions, scorecard)
     _submission(snap, actions, scorecard)
+    _sync(snap, actions, scorecard)
     _risks(snap, actions, scorecard)
     folded = _fold_bandwidth(actions)
 

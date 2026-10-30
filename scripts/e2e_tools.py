@@ -526,6 +526,33 @@ async def t_analyze_vulkan_sync(client, mode):
     check("sync: max_barriers caps the list but not the totals", len(small["barriers"]) == 2 and small["barrier_count"] == r["barrier_count"] and small["barriers_truncated"])
 
 
+async def t_sync_in_report(client, mode):
+    """Vulkan barrier analysis flows into snapshots, the report and diffs; other APIs simply have no such section"""
+    name = "e2e_sync_%s" % mode
+    snap = await call(client, "snapshot_metrics", name=name, include_shading_cost=False)
+    check("sync report: snapshot taken without warnings", not snap.get("warnings"), str(snap.get("warnings")))
+    rep = await call(client, "frame_performance_report", snapshot=name, include_draw_analysis=False, top_actions=50)
+    rows = [s for s in rep["scorecard"] if s["area"] == "sync"]
+    if mode == "gles":
+        check("sync report: an OpenGL capture has no sync row or sync actions", rows == [] and not [a for a in rep["actions"] if a["area"] == "sync"])
+        return
+    full = await call(client, "analyze_vulkan_sync", max_barriers=0)
+    check("sync report: the scorecard has one sync row", len(rows) == 1, str(rows[0]["value"]) if rows else "")
+    barriers, changes = rows[0]["value"].split(" / ")
+    layout_changes = sum(n for k, n in full["layout_transitions"].items() if k.split(" -> ")[0] != k.split(" -> ")[1])
+    check("sync report: barrier and layout-change counts equal the standalone analysis",
+          int(barriers) == full["barrier_count"] and int(changes) == layout_changes, "%s vs %d / %d" % (rows[0]["value"], full["barrier_count"], layout_changes))
+    sync_actions = [a for a in rep["actions"] if a["area"] == "sync"]
+    check("sync report: every non-info issue of the analysis is an action",
+          sorted(a["title"].split(":")[0] for a in sync_actions) == sorted(i["type"] for i in full["issues"] if i["severity"] != "info"),
+          str([a["title"] for a in sync_actions]))
+    check("sync report: actions say where and how", all(a["where"]["event_ids"] and a["how"] for a in sync_actions))
+    diff = await call(client, "diff_snapshots", before=name, after=name)
+    metrics = dict((m["metric"], m) for m in diff["metrics"])
+    check("sync report: diffing a snapshot with itself shows the barrier metrics as the same",
+          metrics["Vulkan barriers"]["verdict"] == "same" and metrics["Vulkan barriers"]["before"] == full["barrier_count"])
+
+
 TESTS = {
     "get_debug_messages": t_get_debug_messages,
     "event_targets": t_event_targets,
@@ -533,6 +560,7 @@ TESTS = {
     "replace_shader": t_replace_shader,
     "debug_shader": t_debug_shader,
     "analyze_vulkan_sync": t_analyze_vulkan_sync,
+    "sync_in_report": t_sync_in_report,
     "render_overlay": t_render_overlay,
     "get_gpu_counters": t_get_gpu_counters,
 }

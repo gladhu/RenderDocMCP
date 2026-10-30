@@ -195,7 +195,7 @@ uv tool update-shell  # 添加到 PATH
 | `replace_shader` / `revert_shader` | 改 shader、在手机上重编译并替换，之后所有工具看到的都是改后的 shader。GLES 改 GLSL（`edits` 查找替换），Vulkan 用 SPIR-V 文件（`source_path`）。设备编译器的错误原样返回；送设备前校验 SPIR-V，因为设备会接受任何字节并让回放失效 |
 | `debug_shader` | 单步调试一次 shader 调用，给出 NaN 第一次出现的位置、最终值和逐步变量变化。**只支持 Vulkan / D3D，GL / GLES 不支持**。模拟结果与手机 GPU 实际输出一致 |
 | `diff_textures` | 两张图的像素差异（数量、最大差、包围盒、热点区域、热力图 PNG）。两侧可以是事件的渲染目标、资源或 PNG 文件，所以也能跨抓帧比 |
-| `analyze_vulkan_sync` | 解码 Vulkan 的 barrier 与 layout 转换，指出过宽阶段掩码、丢弃已写内容的 UNDEFINED 转换、可合并的 barrier、layout 抖动。只解码 `vkCmdPipelineBarrier`，不模拟 render pass 的隐含转换 |
+| `analyze_vulkan_sync` | 解码 Vulkan 的 barrier 与 layout 转换，指出过宽阶段掩码、丢弃已写内容的 UNDEFINED 转换、可合并的 barrier、layout 抖动。只解码 `vkCmdPipelineBarrier`，不模拟 render pass 的隐含转换。Vulkan 抓帧的 `snapshot_metrics` / `frame_performance_report` / `diff_snapshots` 会自动带上它的结果 |
 
 典型闭环：`pixel_history` 找到写坏像素的 DC → `render_overlay` / `debug_shader` 看原因 → `replace_shader` 改 → `diff_textures` / `get_gpu_counters(repeat=3)` 验证 → `revert_shader`。
 
