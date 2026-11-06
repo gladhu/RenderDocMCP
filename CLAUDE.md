@@ -28,8 +28,7 @@ RenderDoc Process (扩展 + 文件轮询)
   持有 `GetVBuffers()` 返回值等）都是这个堆损坏在不同位置的表现，不是这些调用本身的问题。
 - 官方构建远程回放需要手机上装同版本服务端 APK（连接时自动安装）。Android 11+ 首次启动要允许"所有文件访问"：
   `adb shell appops set --uid org.renderdoc.renderdoccmd.arm64 MANAGE_EXTERNAL_STORAGE allow`。两个版本包名相同，会互相覆盖。
-- `scripts/capture_android.py` 抓帧用定制构建目录里的层库和 `renderdoc.pyd`（独立 Python，不受上面的问题影响）；
-  1.43 抓的帧可以用 1.46 打开。
+- `scripts/capture_android.py` 抓帧（Vulkan 和 **GLES**，`--api gles|vulkan`）：有 `pymodulesenderdoc.pyd` 的定制构建时用它（独立 Python，不受上面的问题影响；1.43 抓的帧可以用 1.46 打开）；**没有时（这台机器没有 D: 盘）用官方 1.46 的 `qrenderdoc.exe --python scripts/capture_client_ui.py` 触发抓帧**。分段用法 `--setup-only` → 自己把游戏带到目标场景 → `--attach --out` → `--cleanup`。GLES 用的是同一个层库的 GLES 图层入口（设置项 `gpu_debug_layers_gles`）。
 
 ## 项目结构
 
@@ -54,7 +53,8 @@ RenderDocMCP/
 │   └── utils/
 ├── scripts/
 │   ├── install_extension.py           # 安装扩展
-│   ├── capture_android.py             # Android Vulkan 抓帧
+│   ├── capture_android.py             # Android Vulkan / GLES 抓帧（--api），含分段 --setup-only/--attach/--cleanup
+│   ├── capture_client_ui.py           # 在官方 qrenderdoc 里运行的 target-control 客户端（capture_android.py 调用）
 │   ├── dev_cycle.py                   # 重启 RenderDoc、部署扩展、连手机、开抓帧
 │   ├── e2e_check.py                   # 端到端检查（需已打开抓帧）
 │   └── e2e_tools.py                   # 调试/优化工具的真机端到端检查（经 MCP 层，要求在手机上回放）
