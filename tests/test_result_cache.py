@@ -7,7 +7,7 @@ import unittest
 from unittest import mock
 
 from tests import _stubs  # noqa: F401  (puts the repo root on sys.path)
-from mcp_server import result_cache as rc
+from renderdoc_mcp import result_cache as rc
 
 from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent

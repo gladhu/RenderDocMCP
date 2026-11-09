@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from mcp_server import imagediff as im
-from mcp_server import server
+from renderdoc_mcp import imagediff as im
+from renderdoc_mcp import server
 
 from tests.test_imagediff import solid, with_patch
 

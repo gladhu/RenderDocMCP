@@ -6,10 +6,10 @@ import tempfile
 import unittest
 
 from tests import _stubs  # noqa: F401  (puts the repo root on sys.path)
-from mcp_server import compare as c
-from mcp_server import draw_analysis as da
-from mcp_server import report
-from mcp_server import texture_analysis as ta
+from renderdoc_mcp import compare as c
+from renderdoc_mcp import draw_analysis as da
+from renderdoc_mcp import report
+from renderdoc_mcp import texture_analysis as ta
 
 
 def _snapshot(name, draws, load, store, wasted, cycles, with_reopen):
@@ -249,7 +249,7 @@ class SyncSectionTest(unittest.TestCase):
     @staticmethod
     def _sync(extra_calls=(), usage=None):
         from tests.test_vk_sync import REAL, WORK
-        from mcp_server import vk_sync
+        from renderdoc_mcp import vk_sync
         return vk_sync.brief(vk_sync.analyze(list(REAL) + list(extra_calls), WORK, usage or {}, {}, {"vkCmdSetEvent": 1}))
 
     def test_snapshot_keeps_the_brief_and_non_vulkan_has_none(self):
@@ -295,7 +295,7 @@ class SyncSectionTest(unittest.TestCase):
 
     def test_clean_capture_scores_ok_and_other_apis_have_no_row(self):
         from tests.test_vk_sync import pcall
-        from mcp_server import vk_sync
+        from renderdoc_mcp import vk_sync
         clean = vk_sync.brief(vk_sync.analyze([pcall(1, 128, 1024)], [5]))
         rep = report.build_report(_minimal_snapshot("a", sync=clean))
         self.assertEqual([s["assessment"] for s in rep["scorecard"] if s["area"] == "sync"], ["ok"])

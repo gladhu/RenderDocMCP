@@ -3,7 +3,7 @@
 import unittest
 
 from tests import _stubs  # noqa: F401  (puts the repo root on sys.path)
-from mcp_server import draw_analysis as da
+from renderdoc_mcp import draw_analysis as da
 
 
 def _draw(eid, marker, indices, instances=1, topology="TriangleList", passed=0, failed=0, **kw):

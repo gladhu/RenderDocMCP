@@ -178,7 +178,7 @@ class SummarizeIssueTotalsTest(unittest.TestCase):
         self.assertLess(listed, out["avoidable_mb"])
 
     def test_snapshot_and_report_use_the_totals(self):
-        from mcp_server import compare, report
+        from renderdoc_mcp import compare, report
         out = bw.summarize([], self.issues, 10, "index")
         out["total"]["traffic_mb"] = 400.0
         snap = compare.build_snapshot(

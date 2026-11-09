@@ -3,7 +3,7 @@
 import unittest
 
 from tests import _stubs  # noqa: F401  (puts the repo root on sys.path)
-from mcp_server import texture_analysis as ta
+from renderdoc_mcp import texture_analysis as ta
 
 MB = 1048576
 

@@ -5,7 +5,7 @@ import struct
 import unittest
 import zlib
 
-from mcp_server import imagediff as im
+from renderdoc_mcp import imagediff as im
 
 
 def _paeth(a, b, c):

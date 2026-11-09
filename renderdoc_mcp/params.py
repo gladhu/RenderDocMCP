@@ -15,7 +15,7 @@
   - stage: 接受全名与 vs/ps/cs/gs/hs/ds/frag/comp 等缩写, 大小写不敏感
 
 _as_int / _as_int_list / _as_stage 的解析规则参考 ivyzyshao/RenderDocMCP
-mcp_server/params.py。
+renderdoc_mcp/params.py。
 """
 
 import json

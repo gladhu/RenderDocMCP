@@ -17,7 +17,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from mcp_server.bridge.client import RenderDocBridge, RenderDocBridgeError  # noqa: E402
+from renderdoc_mcp.bridge.client import RenderDocBridge, RenderDocBridgeError  # noqa: E402
 
 EXPECTED = {
     "gles": dict(api="OpenGL", draws=839, passes=9, traffic=80.9, wasted=7.69, shader=225, rt=8, blend=65,

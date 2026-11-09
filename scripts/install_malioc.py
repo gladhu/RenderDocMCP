@@ -2,7 +2,7 @@
 Mali Offline Compiler installer.
 
 Downloads Arm Performance Studio from Arm's official artifact server and unpacks only
-mali_offline_compiler into <repo>/tools/malioc (git-ignored). mcp_server/malioc.py looks there.
+mali_offline_compiler into <repo>/tools/malioc (git-ignored). renderdoc_mcp/malioc.py looks there.
 No system-wide install, no admin rights needed (Windows: msiexec /a).
 
 The Arm license does not allow redistributing Arm Tools, so the binaries are not committed:

@@ -6,7 +6,7 @@ import unittest
 
 from fastmcp import Client
 
-from mcp_server.server import mcp
+from renderdoc_mcp.server import mcp
 
 TOOL_LIKE = re.compile(r"\b(?:get|find|list|analyze|estimate|read|save|pick|pixel|render|replace|revert|debug|diff|"
                        r"compare|snapshot|stat|open|export|frame|diagnose|sample)_[a-z0-9_]+\b")

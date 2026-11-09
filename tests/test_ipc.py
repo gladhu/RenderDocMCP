@@ -1,4 +1,4 @@
-"""File IPC between mcp_server.bridge.client and renderdoc_extension.socket_server, without RenderDoc.
+"""File IPC between renderdoc_mcp.bridge.client and renderdoc_extension.socket_server, without RenderDoc.
 
 The server runs in its worker-thread mode (no PySide2 here) with a UI-invoke stand-in that calls
 directly, and an echo handler.
@@ -47,7 +47,7 @@ class IpcTest(unittest.TestCase):
             "_ipc_socket_server", os.path.join(ROOT, "renderdoc_extension", "socket_server.py"))
         cls.server_mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.server_mod)
-        import mcp_server.bridge.client as client_mod
+        import renderdoc_mcp.bridge.client as client_mod
         cls.client_mod = importlib.reload(client_mod)
         cls.handler = _EchoHandler()
         cls.server = cls.server_mod.MCPBridgeServer("127.0.0.1", 0, cls.handler, ui_invoke=lambda fn: fn())
@@ -57,7 +57,7 @@ class IpcTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.stop()
         cls.env.stop()
-        import mcp_server.bridge.client as client_mod
+        import renderdoc_mcp.bridge.client as client_mod
         importlib.reload(client_mod)
         cls.tmp.cleanup()
 

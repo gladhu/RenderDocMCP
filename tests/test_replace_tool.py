@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from mcp_server import server
+from renderdoc_mcp import server
 
 replace = getattr(server.replace_shader, "fn", server.replace_shader)
 

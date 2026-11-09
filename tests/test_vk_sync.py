@@ -2,7 +2,7 @@
 
 import unittest
 
-from mcp_server import vk_sync as vs
+from renderdoc_mcp import vk_sync as vs
 
 
 def pcall(eid, src, dst, buffers=(), images=(), memory=0, cb="ResourceId::368", name="vkCmdPipelineBarrier"):

@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastmcp import Client  # noqa: E402
 
-from mcp_server.server import mcp  # noqa: E402
+from renderdoc_mcp.server import mcp  # noqa: E402
 
 results = []
 

@@ -21,7 +21,7 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
-from mcp_server.bridge.client import RenderDocBridge, RenderDocBridgeError  # noqa: E402
+from renderdoc_mcp.bridge.client import RenderDocBridge, RenderDocBridgeError  # noqa: E402
 
 RENDERDOC_DIR = os.environ.get("RENDERDOC_DIR", r"C:\Program Files\RenderDoc")
 CAPTURES = {

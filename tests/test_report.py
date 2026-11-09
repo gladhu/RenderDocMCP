@@ -2,7 +2,7 @@
 
 import unittest
 
-from mcp_server import report
+from renderdoc_mcp import report
 
 
 def _snap(issues, traffic=100.0):
